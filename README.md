@@ -25,7 +25,7 @@ Changes from original HLSLCrossCompiler:
 
 ## Note
 
-This project does not include build files, or test suite, as they are integrated into the Unity build systems. However, building this library should be fairly straightforward: just compile src/*.cpp (in C++11 mode!) and src/cbstring/*.c with the following include paths:
+This project does not include build files, or test suite, as they are integrated into the Unity build systems. However, building this library should be fairly straightforward: just compile `src/*.cpp` (in C++11 mode!) and `src/cbstring/*.c` with the following include paths:
 
 - include
 - src/internal_includes
