@@ -1,12 +1,12 @@
 # HLSLcc
-DirectX shader bytecode cross compiler
+DirectX shader bytecode cross compiler.
 
 Originally based on https://github.com/James-Jones/HLSLCrossCompiler.
 
 This library takes DirectX bytecode as input, and translates it into the following languages:
 - GLSL (OpenGL 3.2 and later)
 - GLSL ES (OpenGL ES 3.0 and later)
-- GLSL ES for Vulkan consumption
+- GLSL for Vulkan consumption (as input for Glslang to generate SPIR-V)
 - Metal Shading Language
 
 This library is used to generate all shaders in Unity for OpenGL, OpenGL ES 3.0+, Metal and Vulkan.
