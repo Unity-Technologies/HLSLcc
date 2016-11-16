@@ -25,12 +25,14 @@ Changes from original HLSLCrossCompiler:
 
 ## Note
 
-This project does not include build files, or test suite, as they are integrated into the Unity build systems. However, building this library should be fairly straightforward: just compile `src/*.cpp` (in C++11 mode!) and `src/cbstring/*.c` with the following include paths:
+This project is originally integrated into the Unity build systems. However, building this library should be fairly straightforward: just compile `src/*.cpp` (in C++11 mode!) and `src/cbstring/*.c` with the following include paths:
 
 - include
 - src/internal_includes
 - src/cbstrinc
 - src 
+
+Alternatively, a CMakeLists.txt is provided to build the project using cmake.
 
 The main entry point is TranslateHLSLFromMem() function in HLSLcc.cpp (taking DX bytecode as input).
 
