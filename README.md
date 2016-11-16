@@ -47,4 +47,4 @@ The main entry point is TranslateHLSLFromMem() function in HLSLcc.cpp (taking DX
 
 ## License
 
-See license.txt.
+MIT license for HLSLcc itself, BSD license for the bstring library. See license.txt.
