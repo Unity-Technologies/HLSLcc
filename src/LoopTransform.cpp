@@ -28,15 +28,15 @@ namespace HLSLcc
 		using namespace std;
 		res.clear();
 
-		Instruction *i = &phase.psInst[0];
 		// A stack of loopinfo elements (stored in res)
 		list<LoopInfo *> loopStack;
 
 		// Storage for dummy LoopInfo elements to be used for switch-cases. We don't want them cluttering the Loops list so store them here.
 		list<LoopInfo> dummyLIForSwitches;
 
-		while (i != &*phase.psInst.end())
+		for (auto &inst : phase.psInst)
 		{
+			Instruction *i = &inst;
 			if (i->eOpcode == OPCODE_LOOP)
 			{
 				LoopInfo *currLoopInfo = &*res.insert(res.end(), LoopInfo());
@@ -75,7 +75,6 @@ namespace HLSLcc
 					li->m_ExitPoints.push_back(i);
 				}
 			}
-			i++;
 		}
 
 	}
@@ -347,6 +346,9 @@ namespace HLSLcc
 	{
 		Loops loops;
 		BuildLoopInfo(phase, loops);
+
+		if (!loops.size())
+			return;
 
 		std::for_each(loops.begin(), loops.end(), [&phase](LoopInfo &li)
 		{
