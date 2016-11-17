@@ -249,7 +249,7 @@ static void DeclareInput(
 			if (psShader->eShaderType != VERTEX_SHADER && (psContext->flags & HLSLCC_FLAG_SEPARABLE_SHADER_OBJECTS))
 				addLocation = true;
 
-			if (addLocation)
+			if (addLocation && psContext->psDependencies)
 			{
 				std::ostringstream oss;
 				oss << "layout(location = " << psContext->psDependencies->GetVaryingLocation(std::string(InputName), psShader->eShaderType, true) << ") ";
@@ -262,7 +262,9 @@ static void DeclareInput(
 		// Do the reflection report on vertex shader inputs
 		if (psShader->eShaderType == VERTEX_SHADER)
 		{
-			psContext->m_Reflection.OnInputBinding(std::string(InputName), psContext->psDependencies->GetVaryingLocation(std::string(InputName), VERTEX_SHADER, true));
+			uint32_t varyingLoc = psContext->psDependencies ?
+				psContext->psDependencies->GetVaryingLocation(std::string(InputName), VERTEX_SHADER, true) : -1;
+			psContext->m_Reflection.OnInputBinding(std::string(InputName), varyingLoc);
 		}
 
 		switch (eIndexDim)
@@ -835,8 +837,10 @@ static void DeclareUBOConstants(HLSLCrossCompilerContext* psContext, const uint3
 	/* [layout (location = X)] uniform vec4 HLSLConstantBufferName[numConsts]; */
 	if ((psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) != 0)
 	{
-		GLSLCrossDependencyData::VulkanResourceBinding binding = psContext->psDependencies->GetVulkanResourceBinding(Name, false, 1);
-		bformata(glsl, "layout(set = %d, binding = %d, std140) ", binding.first, binding.second);
+		if (psContext->psDependencies) {
+			GLSLCrossDependencyData::VulkanResourceBinding binding = psContext->psDependencies->GetVulkanResourceBinding(Name, false, 1);
+			bformata(glsl, "layout(set = %d, binding = %d, std140) ", binding.first, binding.second);
+		}
 	}
 	else
 	{
@@ -1224,8 +1228,10 @@ static void TranslateResourceTexture(HLSLCrossCompilerContext* psContext, const 
 			std::string tname = TextureSamplerName(&psShader->sInfo, psDecl->asOperands[0].ui32RegisterNumber, *i, 0);
 			if ((psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) != 0)
 			{
-				GLSLCrossDependencyData::VulkanResourceBinding binding = psContext->psDependencies->GetVulkanResourceBinding(tname);
-				bformata(glsl, "layout(set = %d, binding = %d) ", binding.first, binding.second);
+				if (psContext->psDependencies) {
+					GLSLCrossDependencyData::VulkanResourceBinding binding = psContext->psDependencies->GetVulkanResourceBinding(tname);
+					bformata(glsl, "layout(set = %d, binding = %d) ", binding.first, binding.second);
+				}
 			}
 			bcatcstr(glsl, "uniform ");
 			bcatcstr(glsl, samplerPrecision);
@@ -1260,8 +1266,10 @@ static void TranslateResourceTexture(HLSLCrossCompilerContext* psContext, const 
 
 	if ((psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) != 0)
 	{
-		GLSLCrossDependencyData::VulkanResourceBinding binding = psContext->psDependencies->GetVulkanResourceBinding(tname);
-		bformata(glsl, "layout(set = %d, binding = %d) ", binding.first, binding.second);
+		if (psContext->psDependencies) {
+			GLSLCrossDependencyData::VulkanResourceBinding binding = psContext->psDependencies->GetVulkanResourceBinding(tname);
+			bformata(glsl, "layout(set = %d, binding = %d) ", binding.first, binding.second);
+		}
 	}
 	bcatcstr(glsl, "uniform ");
 	bcatcstr(glsl, samplerPrecision);

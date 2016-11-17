@@ -1024,7 +1024,7 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 		if (psContext->psShader->eShaderType == VERTEX_SHADER)
 		{
 			std::ostringstream oss;
-			uint32_t loc = psContext->psDependencies->GetVaryingLocation(name, VERTEX_SHADER, true);
+			uint32_t loc = psContext->psDependencies ? psContext->psDependencies->GetVaryingLocation(name, VERTEX_SHADER, true) : -1;
 			oss << "attribute(" << loc << ")";
 			semantic = oss.str();
 			psContext->m_Reflection.OnInputBinding(name, loc);

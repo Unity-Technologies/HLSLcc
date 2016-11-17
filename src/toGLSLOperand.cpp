@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "internal_includes/toGLSLOperand.h"
 #include "internal_includes/HLSLccToolkit.h"
 #include "internal_includes/HLSLCrossCompilerContext.h"

@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <stdio.h>
 #include "internal_includes/HLSLccToolkit.h"
 #include "internal_includes/HLSLCrossCompilerContext.h"
