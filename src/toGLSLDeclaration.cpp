@@ -2560,7 +2560,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 			// non-float images need either 'i' or 'u' prefix.
 			char imageTypePrefix[2] = { 0, 0 };
 			uint32_t bindpoint = psDecl->asOperands[0].ui32RegisterNumber;
-			const bool isVulkan = (psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS);
+			const bool isVulkan = (psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) != 0;
 
 			if(psDecl->sUAV.ui32GloballyCoherentAccess & GLOBALLY_COHERENT_ACCESS)
 			{
@@ -2701,7 +2701,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 		}
 		case OPCODE_DCL_UNORDERED_ACCESS_VIEW_STRUCTURED:
 		{
-			const bool isVulkan = (psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS);
+			const bool isVulkan = (psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) != 0;
 			if(psDecl->sUAV.bCounter)
 			{
 				if (isVulkan) 
@@ -2729,7 +2729,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 		}
 		case OPCODE_DCL_UNORDERED_ACCESS_VIEW_RAW:
 		{
-			const bool isVulkan = (psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS);
+			const bool isVulkan = (psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) != 0;
 			if(psDecl->sUAV.bCounter)
 			{
 				if (isVulkan)
