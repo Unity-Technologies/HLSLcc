@@ -62,7 +62,16 @@ HLSLCC_API int HLSLCC_APIENTRY TranslateHLSLFromMem(const char* shader,
 
 		sContext.psShader = psShader.get();
 		sContext.flags = flags;
-		sContext.psDependencies = dependencies;
+
+		// If dependencies == NULL, we'll create a dummy object for it so that there's always something there.
+		std::auto_ptr<GLSLCrossDependencyData> depPtr(NULL);
+		if (dependencies == NULL)
+		{
+			depPtr.reset(new GLSLCrossDependencyData());
+			sContext.psDependencies = depPtr.get();
+		}
+		else
+			sContext.psDependencies = dependencies;
 
 		for (i = 0; i < psShader->asPhases.size(); ++i)
 		{

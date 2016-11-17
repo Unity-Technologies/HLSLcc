@@ -402,7 +402,7 @@ static void ReadResources(const uint32_t* pui32Tokens,//in
 
 	psShaderInfo->psResourceBindings.clear();
 	psShaderInfo->psResourceBindings.resize(ui32NumResourceBindings);
-	psResBindings = &psShaderInfo->psResourceBindings[0];
+	psResBindings = ui32NumResourceBindings == 0 ? NULL : &psShaderInfo->psResourceBindings[0];
 
     for(i=0; i < ui32NumResourceBindings; ++i)
     {
@@ -415,7 +415,7 @@ static void ReadResources(const uint32_t* pui32Tokens,//in
 
 	psShaderInfo->psConstantBuffers.clear();
 	psShaderInfo->psConstantBuffers.resize(ui32NumConstantBuffers);
-	psConstantBuffers = &psShaderInfo->psConstantBuffers[0];
+	psConstantBuffers = ui32NumConstantBuffers == 0 ? NULL : &psShaderInfo->psConstantBuffers[0];
 
     for(i=0; i < ui32NumConstantBuffers; ++i)
     {

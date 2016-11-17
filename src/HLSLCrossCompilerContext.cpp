@@ -72,12 +72,13 @@ void HLSLCrossCompilerContext::ClearDependencyData()
 	case PIXEL_SHADER:
 	{
 		psDependencies->ClearCrossDependencyData();
+		break;
 	}
 	case HULL_SHADER:
 	{
 		psDependencies->eTessPartitioning = TESSELLATOR_PARTITIONING_UNDEFINED;
 		psDependencies->eTessOutPrim = TESSELLATOR_OUTPUT_UNDEFINED;
-						break;
+		break;
 	}
 	default:
 		break;
