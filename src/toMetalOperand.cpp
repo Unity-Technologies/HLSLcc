@@ -5,6 +5,7 @@
 #include "internal_includes/debug.h"
 #include "internal_includes/Shader.h"
 #include "internal_includes/toMetal.h"
+#include <algorithm>
 #include <cmath>
 #include <sstream>
 

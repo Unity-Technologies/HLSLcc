@@ -7,6 +7,7 @@
 #include "internal_includes/Shader.h"
 #include "internal_includes/toGLSL.h"
 #include <cmath>
+#include <algorithm>
 
 #include <sstream>
 
