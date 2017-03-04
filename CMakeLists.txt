@@ -5,6 +5,10 @@ project(HLSLcc)
 
 option(HLSLCC_LIBRARY_SHARED "Build shared library instead of static." ON)
 
+if(MSVC)
+	add_definitions(-DNOMINMAX -DVC_EXTRALEAN -DWIN32_LEAN_AND_MEAN -D_CRT_SECURE_NO_WARNINGS -D_SCL_SECURE_NO_WARNINGS)
+endif(MSVC)
+
 set(HLSLCC_SRC
 		src/ControlFlowGraph.cpp
 		src/ControlFlowGraphUtils.cpp
