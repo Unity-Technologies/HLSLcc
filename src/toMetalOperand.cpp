@@ -7,6 +7,7 @@
 #include "internal_includes/toMetal.h"
 #include <cmath>
 #include <sstream>
+#include <algorithm>
 
 #include <float.h>
 #include <stdlib.h>
