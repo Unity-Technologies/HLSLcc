@@ -205,7 +205,7 @@ HLSLCC_API int HLSLCC_APIENTRY TranslateHLSLFromFile(const char* filename,
 	length = ftell(shaderFile);
 	fseek(shaderFile, 0, SEEK_SET);
 
-	shader.reserve(length + 1);
+	shader.resize(length + 1);
 
 	readLength = fread(&shader[0], 1, length, shaderFile);
 
