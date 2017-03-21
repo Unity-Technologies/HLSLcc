@@ -10,6 +10,7 @@
 #include <cmath>
 
 #include <sstream>
+#include <algorithm>
 
 #include <float.h>
 #include <stdlib.h>

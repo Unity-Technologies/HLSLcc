@@ -4,10 +4,6 @@
 #include <vector>
 #include <memory>
 
-#ifdef __APPLE__
-#include <tr1/memory>
-#endif
-
 enum{ MAX_SUB_OPERANDS = 3 };
 class Operand;
 class HLSLCrossCompilerContext;
@@ -21,13 +17,7 @@ struct Instruction;
 class Operand
 {
 public:
-#ifdef __APPLE__
-	// Herp derp Apple is stuck in 2005
-	typedef std::tr1::shared_ptr<Operand> SubOperandPtr;
-#else
 	typedef std::shared_ptr<Operand> SubOperandPtr;
-#endif
-
 
 
 	Operand()
