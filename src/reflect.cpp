@@ -306,7 +306,6 @@ static const uint32_t* ReadConstantBuffer(ShaderInfo* psShaderInfo,
         //D3D11_SHADER_VARIABLE_DESC
         ShaderVar * const psVar = &psBuffer->asVars[i];
 
-        uint32_t ui32Flags;
         uint32_t ui32TypeOffset;
         uint32_t ui32DefaultValueOffset;
 
@@ -317,7 +316,10 @@ static const uint32_t* ReadConstantBuffer(ShaderInfo* psShaderInfo,
 
         psVar->ui32StartOffset = *pui32VarToken++;
         psVar->ui32Size = *pui32VarToken++;
-        ui32Flags = *pui32VarToken++;
+        
+        //skip ui32Flags
+        pui32VarToken++;
+        
         ui32TypeOffset = *pui32VarToken++;
 
 		psVar->sType.name = psVar->name;
@@ -367,12 +369,12 @@ static const uint32_t* ReadConstantBuffer(ShaderInfo* psShaderInfo,
 
 
     {
-        uint32_t ui32Flags;
-        uint32_t ui32BufferType;
-
         psBuffer->ui32TotalSizeInBytes = *pui32Tokens++;
-        ui32Flags = *pui32Tokens++;
-        ui32BufferType = *pui32Tokens++;
+        
+        //skip ui32Flags
+        pui32Tokens++;
+        //skip ui32BufferType
+        pui32Tokens++;
     }
 
     return pui32Tokens;

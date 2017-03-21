@@ -274,7 +274,7 @@ SHADER_VARIABLE_TYPE Operand::GetDataType(HLSLCrossCompilerContext* psContext, S
 	{
 	case OPERAND_TYPE_TEMP:
 	{
-		SHADER_VARIABLE_TYPE eCurrentType;
+		SHADER_VARIABLE_TYPE eCurrentType = SVT_FLOAT;
 		int i = 0;
 
 		if (eSelMode == OPERAND_4_COMPONENT_SELECT_1_MODE)

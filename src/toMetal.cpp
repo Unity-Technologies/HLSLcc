@@ -81,13 +81,11 @@ bool ToMetal::Translate()
 
 	ClampPartialPrecisions();
 
-	psShader->PrepareStructuredBufferBindingSlots();
-
 	ShaderPhase &phase = psShader->asPhases[0];
 	phase.UnvectorizeImmMoves();
 	psContext->DoDataTypeAnalysis(&phase);
 	phase.ResolveUAVProperties();
-	psShader->ResolveStructuredBufferBindingSlots(&phase);
+	ReserveUAVBindingSlots(&phase); // TODO: unify slot allocation code between gl/metal/vulkan
 	phase.PruneConstArrays();
 	HLSLcc::DoLoopTransform(phase);
 
@@ -95,11 +93,17 @@ bool ToMetal::Translate()
 
 	bcatcstr(glsl, "#include <metal_stdlib>\n#include <metal_texture>\nusing namespace metal;\n");
 
-
 	for (i = 0; i < psShader->asPhases[0].psDecl.size(); ++i)
-	{
 		TranslateDeclaration(&psShader->asPhases[0].psDecl[i]);
-	}
+
+    // Output default implementations for framebuffer index remap if needed
+    if(m_NeedFBOutputRemapDecl)
+        bcatcstr(glsl, "#ifndef XLT_REMAP_O\n#define XLT_REMAP_O {0, 1, 2, 3, 4, 5, 6, 7}\n#endif\nconstexpr constant uint xlt_remap_o[] = XLT_REMAP_O;\n");
+    if(m_NeedFBInputRemapDecl)
+        bcatcstr(glsl, "#ifndef XLT_REMAP_I\n#define XLT_REMAP_I {0, 1, 2, 3, 4, 5, 6, 7}\n#endif\nconstexpr constant uint xlt_remap_i[] = XLT_REMAP_I;\n");
+    
+    DeclareClipPlanes(&psShader->asPhases[0].psDecl[0], psShader->asPhases[0].psDecl.size());
+	GenerateTexturesReflection(&psContext->m_Reflection);
 
 	if (m_StructDefinitions[GetInputStructName()].m_Members.size() > 0)
 	{
@@ -262,4 +266,26 @@ void ToMetal::ClampPartialPrecisions()
 		if (o->eMinPrecision == OPERAND_MIN_PRECISION_FLOAT_2_8)
 			o->eMinPrecision = OPERAND_MIN_PRECISION_FLOAT_16;
 	});
+}
+
+void ToMetal::ReserveUAVBindingSlots(ShaderPhase *phase)
+{
+	for (uint32_t p = 0; p < phase->psDecl.size(); ++p)
+	{
+		uint32_t regNo = phase->psDecl[p].asOperands[0].ui32RegisterNumber;
+		
+		if (phase->psDecl[p].eOpcode == OPCODE_DCL_UNORDERED_ACCESS_VIEW_RAW ||
+			phase->psDecl[p].eOpcode == OPCODE_DCL_UNORDERED_ACCESS_VIEW_STRUCTURED)
+		{
+			m_BufferSlots.ReserveBindingSlot(regNo, BindingSlotAllocator::RWBuffer);
+		}
+		else if (phase->psDecl[p].eOpcode == OPCODE_DCL_UNORDERED_ACCESS_VIEW_TYPED)
+		{
+			// Typed buffers are atm faked using structured buffers -> bind in buffer space
+			if (phase->psDecl[p].value.eResourceDimension == RESOURCE_DIMENSION_BUFFER)
+				m_BufferSlots.ReserveBindingSlot(regNo, BindingSlotAllocator::RWBuffer);
+			else
+				m_TextureSlots.ReserveBindingSlot(regNo, BindingSlotAllocator::UAV);
+		}
+	}
 }

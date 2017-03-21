@@ -2,6 +2,8 @@
 #define LANGUAGES_H
 
 #include "hlslcc.h"
+#include "HLSLCrossCompilerContext.h"
+#include "Shader.h"
 
 static int InOutSupported(const GLLang eLang)
 {
@@ -42,9 +44,13 @@ static int HaveOverloadedTextureFuncs(const GLLang eLang)
 }
 
 //Only enable for ES.
-//Not present in 120, ignored in other desktop languages.
-static int HavePrecisionQualifers(const GLLang eLang)
+//Not present in 120, ignored in other desktop languages. Specifically enabled on Vulkan.
+static int HavePrecisionQualifiers(const HLSLCrossCompilerContext *psContext)
 {
+	if ((psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) != 0)
+		return 1;
+
+	const GLLang eLang = psContext->psShader->eTargetLanguage;
 	if(eLang >= LANG_ES_100 && eLang <= LANG_ES_310)
 	{
 		return 1;

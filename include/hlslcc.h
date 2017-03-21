@@ -43,7 +43,9 @@ typedef struct GlExtensions {
 	uint32_t ARB_explicit_attrib_location : 1;
 	uint32_t ARB_explicit_uniform_location : 1;
 	uint32_t ARB_shading_language_420pack : 1;
-}GlExtensions;
+	uint32_t OVR_multiview : 1;
+	uint32_t EXT_shader_framebuffer_fetch : 1;
+} GlExtensions;
 
 #include "ShaderInfo.h"
 
@@ -197,13 +199,17 @@ private:
 		}
 	}
 
-
+	typedef std::map<std::string, uint32_t> SpecializationConstantMap;
+	SpecializationConstantMap m_SpecConstantMap;
+	uint32_t m_NextSpecID;
 
 public:
 	GLSLCrossDependencyData()
 		: eTessPartitioning(),
 		eTessOutPrim(),
-		ui32ProgramStages(0)
+		ui32ProgramStages(0),
+		m_ExtBlendModes(),
+		m_NextSpecID(0)
 	{ 
 		memset(nextAvailableVaryingLocation, 0, sizeof(nextAvailableVaryingLocation));
 		memset(m_NextAvailableVulkanResourceBinding, 0, sizeof(m_NextAvailableVulkanResourceBinding));
@@ -288,6 +294,8 @@ public:
 	// Bitfield for the shader stages this program is going to include (see PS_FLAG_*).
 	// Needed so we can construct proper shader input and output names
 	uint32_t ui32ProgramStages;
+
+	std::vector<std::string> m_ExtBlendModes; // The blend modes (from KHR_blend_equation_advanced) requested for this shader. See ext spec for list.
 	
 	inline INTERPOLATION_MODE GetInterpolationMode(uint32_t regNo)
 	{
@@ -313,9 +321,21 @@ public:
 			varyingLocationsMap[i].clear();
 			nextAvailableVaryingLocation[i] = 0;
 		}
+		m_NextSpecID = 0;
+		m_SpecConstantMap.clear();
 	}
 
+	// Retrieve or allocate a layout slot for Vulkan specialization constant
+	inline uint32_t GetSpecializationConstantSlot(const std::string &name)
+	{
+		SpecializationConstantMap::iterator itr = m_SpecConstantMap.find(name);
+		if (itr != m_SpecConstantMap.end())
+			return itr->second;
 
+		m_SpecConstantMap.insert(std::make_pair(std::string(name), m_NextSpecID));
+
+		return m_NextSpecID++;
+	}
 };
 
 struct GLSLShader
@@ -339,16 +359,17 @@ public:
 
 	virtual void OnInputBinding(const std::string &name, int bindIndex) {}
 
+	// Returns false if this constant buffer is not needed for this shader. This info can be used for pruning unused 
+	// constant buffers and vars from compute shaders where we need broader context than a single kernel to know 
+	// if something can be dropped, as the constant buffers are shared between all kernels in a .compute file.
 	virtual bool OnConstantBuffer(const std::string &name, size_t bufferSize, size_t memberCount) { return true; }
 
+	// Returns false if this constant var is not needed for this shader. See above.
 	virtual bool OnConstant(const std::string &name, int bindIndex, SHADER_VARIABLE_TYPE cType, int rows, int cols, bool isMatrix, int arraySize) { return true; }
 
 	virtual void OnConstantBufferBinding(const std::string &name, int bindIndex) {}
-
-	virtual void OnTextureBinding(const std::string &name, int bindIndex, HLSLCC_TEX_DIMENSION dim, bool isUAV) {}
-
+	virtual void OnTextureBinding(const std::string &name, int bindIndex, int samplerIndex, HLSLCC_TEX_DIMENSION dim, bool isUAV) {}
 	virtual void OnBufferBinding(const std::string &name, int bindIndex, bool isUAV) {}
-	
 	virtual void OnThreadGroupSize(unsigned int xSize, unsigned int ySize, unsigned int zSize) {}
 };
 
@@ -422,6 +443,16 @@ static const unsigned int HLSLCC_FLAG_VULKAN_BINDINGS = 0x40000;
 
 // If set, metal output will use linear sampler for shadow compares, otherwise point sampler.
 static const unsigned int HLSLCC_FLAG_METAL_SHADOW_SAMPLER_LINEAR = 0x80000;
+
+// If set, emits for NVN, the Nvidia-provided graphics API for Nintendo Switch.
+static const unsigned int HLSLCC_FLAG_NVN_TARGET = 0x100000; 
+
+// If set, and generating Vulkan shaders, attempts to detect static branching and transforms them into specialization constants
+static const unsigned int HLSLCC_FLAG_VULKAN_SPECIALIZATION_CONSTANTS = 0x200000;
+
+// If set, this shader uses the GLSL extension EXT_shader_framebuffer_fetch
+static const unsigned int HLSLCC_FLAG_SHADER_FRAMEBUFFER_FETCH = 0x400000;
+
 
 #ifdef __cplusplus
 extern "C" {

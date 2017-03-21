@@ -95,6 +95,14 @@ void HLSLCrossCompilerContext::AddIndentation()
 	}
 }
 
+void HLSLCrossCompilerContext::RequireExtension(const std::string &extName)
+{
+	if (m_EnabledExtensions.find(extName) != m_EnabledExtensions.end())
+		return;
+
+	m_EnabledExtensions.insert(extName);
+	bformata(extensions, "#extension %s : require\n", extName.c_str());
+}
 
 std::string HLSLCrossCompilerContext::GetDeclaredInputName(const Operand* psOperand, int *piRebase, int iIgnoreRedirect, uint32_t *puiIgnoreSwizzle) const
 {
@@ -186,7 +194,13 @@ std::string HLSLCrossCompilerContext::GetDeclaredOutputName(const Operand* psOpe
 	std::string res = "";
 	if (psTranslator->TranslateSystemValue(psOperand, psOut, res, puiIgnoreSwizzle, psShader->aIndexedOutput[regSpace][psOperand->ui32RegisterNumber], false))
 	{
-		if (psShader->eTargetLanguage == LANG_METAL && (iIgnoreRedirect == 0))
+		// HACK: i couldnt find better way to handle it
+		// clip planes will always have interim variable, as HLSL operates on float4 but we need to size output accordingly with actual planes count
+		// for some reason TranslateSystemValue return *outSkipPrefix = true for ALL system vars and then we simply ignore it here
+		const bool isClipPlanes = psOut && psOut->eSystemValueType == NAME_CLIP_DISTANCE;
+
+		if (psShader->eTargetLanguage == LANG_METAL && (iIgnoreRedirect == 0) && !isClipPlanes)
+
 			return outputPrefix + res;
 		else
 			return res;
@@ -247,6 +261,13 @@ bool HLSLCrossCompilerContext::OutputNeedsDeclaring(const Operand* psOperand, co
 		{
 			psShader->acOutputDeclared[regSpace][startIndex + offset] |= compMask;
 		}
+
+		if (psSignature && (psSignature->semanticName == "PSIZE") && (psShader->eTargetLanguage != LANG_METAL))
+		{
+			// gl_PointSize, doesn't need declaring. TODO: Metal doesn't have pointsize at all?
+			return false;
+		}
+
 		return true;
 	}
 

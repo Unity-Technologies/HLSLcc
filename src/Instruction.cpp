@@ -123,10 +123,17 @@ static Operand *GetSrcSwizzleOperand(Instruction *psInst)
 	case OPCODE_LD_STRUCTURED:
 		return &psInst->asOperands[3];
 
+	case OPCODE_SAMPLE_INFO:
+		return &psInst->asOperands[1];
+
 	case OPCODE_ISHL:
 	case OPCODE_ISHR:
 	case OPCODE_USHR:
-		return &psInst->asOperands[1];
+		// sm4 variant has single component selection on src1 -> only src0 has swizzle
+		if (psInst->asOperands[2].eSelMode == OPERAND_4_COMPONENT_SELECT_1_MODE)
+			return &psInst->asOperands[1];
+		else // whereas sm5 variant has swizzle also on src1 
+			return NULL;
 
 	default:
 		ASSERT(0);

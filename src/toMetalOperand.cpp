@@ -14,7 +14,11 @@
 using namespace HLSLcc;
 
 #ifdef _MSC_VER
+
+#if _MSC_VER < 1900
 #define snprintf _snprintf
+#endif
+
 #define fpcheck(x) (_isnan(x) || !_finite(x))
 #else
 #define fpcheck(x) (std::isnan(x) || std::isinf(x))
@@ -379,6 +383,7 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
 			((Operand *)psOperand)->aeDataType[3] = requestedType;
 		}
 
+		bool bitcast = false;
 		if (AreTypesCompatible(eType, ui32TOFlag) == 0)
 		{
 			if (CanDoDirectCast(eType, requestedType))
@@ -394,15 +399,16 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
 				// Direct cast not possible, need to do bitcast.
 				oss << "as_type<"<< GetConstructorForTypeMetal(requestedType, requestedComponents) << ">(";
 				hasCtor = 1;
+				bitcast = true;
 				numParenthesis++;
 			}
 		}
 
 		// Add ctor if needed (upscaling). Type conversion is already handled above, so here we must
 		// use the original type to not make type conflicts in bitcasts
-		if (((numComponents < requestedComponents)||(scalarWithSwizzle != 0)) && (hasCtor == 0))
+		if (((numComponents < requestedComponents)||(scalarWithSwizzle != 0)) && (hasCtor == 0 || bitcast))
 		{
-			oss << GetConstructorForType(psContext, requestedType, requestedComponents, false) << "(";
+			oss << GetConstructorForType(psContext, eType, requestedComponents, false) << "(";
 
 			numParenthesis++;
 			hasCtor = 1;
@@ -623,7 +629,7 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
 			const ShaderVarType* psVarType = NULL;
 			int32_t index = -1;
 			std::vector<uint32_t> arrayIndices;
-			bool isArray;
+			bool isArray = false;
 			psContext->psShader->sInfo.GetConstantBufferFromBindingPoint(RGROUP_CBUFFER, psOperand->aui32ArraySizes[0], &psCBuf);
 			ASSERT(psCBuf != NULL);
 
@@ -644,6 +650,9 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
 					cbName = psCBuf->name;
 				}
 				cbName += ".";
+				// Drop the constant buffer name from subpass inputs
+				if (cbName.substr(0, 19) == "hlslcc_SubpassInput")
+					cbName = "";
 			}
 
 			if((ui32TOFlag & TO_FLAG_DECLARATION_NAME) != TO_FLAG_DECLARATION_NAME)

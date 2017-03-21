@@ -104,6 +104,9 @@ public:
 	uint32_t m_NextFreeTempRegister; // A counter for creating new temporaries for for-loops.
 	uint32_t m_NextTexCoordTemp; // A counter for creating tex coord temps for driver issue workarounds
 
+	// Instructions that are static branches (branches based on constant buffer values only)
+	std::vector<Instruction *> m_StaticBranchInstructions;
+
 private:
 	bool m_CFGInitialized;
 	HLSLcc::ControlFlow::ControlFlowGraph m_CFG;
@@ -142,10 +145,7 @@ public:
 		ui32CurrentVertexOutputStream(0),
 		textureSamplers(),
 		aui32StructuredBufferBindingPoints(MAX_RESOURCE_BINDINGS, 0),
-		ui32CurrentStructuredBufferIndex(),
-		m_CubemapArrayExtensionDeclared(false),
-		m_TextureBufferExtensionDeclared(false),
-		m_ClipDistanceExtensionDeclared(false)
+		ui32CurrentStructuredBufferIndex()
 	{
 	}
 
@@ -245,10 +245,6 @@ public:
 
 	std::vector<uint32_t> aui32StructuredBufferBindingPoints;
 	uint32_t ui32CurrentStructuredBufferIndex;
-
-	bool m_CubemapArrayExtensionDeclared;
-	bool m_TextureBufferExtensionDeclared;
-	bool m_ClipDistanceExtensionDeclared;
 
 	std::vector<char> psIntTempSizes; // Array for whether this temp register needs declaration as int temp
 	std::vector<char> psInt16TempSizes; // min16ints

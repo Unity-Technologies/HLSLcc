@@ -145,10 +145,6 @@ static DefineUseChainEntry *GetOrCreateDefinition(const BasicBlock::Definition &
 // Do flow control analysis on the instructions and build the define-use and use-define chains
 void BuildUseDefineChains(std::vector<Instruction> &instructions, uint32_t ui32NumTemps, DefineUseChains &psDUChain, UseDefineChains &psUDChain, HLSLcc::ControlFlow::ControlFlowGraph &cfg)
 {
-
-	Instruction *psFirstInstruction = &instructions[0];
-	Instruction *psLastInstruction = &instructions[instructions.size() - 1];
-
 	ActiveDefinitions lastSeenDefinitions(ui32NumTemps * 4, NULL); // Array of pointers to the currently active definition for each temp
 
 	psDUChain.clear();

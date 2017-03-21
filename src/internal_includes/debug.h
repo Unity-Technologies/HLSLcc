@@ -12,7 +12,9 @@ static void CustomAssert(int expression)
     }
 }
 #else
-#define ASSERT(expr)
+#define UNUSED(EXPR_) \
+	do { if (false) (void)(EXPR_); } while(0)
+#define ASSERT(expr) UNUSED(expr)
 #endif
 
 #endif

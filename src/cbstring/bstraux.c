@@ -193,10 +193,6 @@ int i, l, c;
 }
 
 static size_t readNothing (void *buff, size_t elsize, size_t nelem, void *parm) {
-	buff = buff;
-	elsize = elsize;
-	nelem = nelem;
-	parm = parm;
 	return 0; /* Immediately indicate EOF. */
 }
 

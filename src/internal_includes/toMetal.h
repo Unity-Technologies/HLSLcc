@@ -26,7 +26,11 @@ class BindingSlotAllocator
 	typedef std::map<uint32_t, uint32_t> SlotMap;
 	SlotMap m_Allocations;
 public:
-	BindingSlotAllocator() : m_Allocations(), m_NextFreeSlot(0) {}
+	BindingSlotAllocator() : m_Allocations()
+	{
+		for(int i = MAX_RESOURCE_BINDINGS-1; i >= 0; i --)
+			m_FreeSlots.push_back(i);
+	}
 
 	enum BindType
 	{
@@ -36,23 +40,54 @@ public:
 		UAV
 	};
 
-	// isUAV is only meaningful for texture slots
-
 	uint32_t GetBindingSlot(uint32_t regNo, BindType type)
 	{
 		// The key is regNumber with the bindtype stored to highest 16 bits
 		uint32_t key = regNo | (uint32_t(type) << 16);
 		SlotMap::iterator itr = m_Allocations.find(key);
-		if (itr == m_Allocations.end())
+		if(itr == m_Allocations.end())
 		{
-			m_Allocations.insert(std::make_pair(key, m_NextFreeSlot));
-			return m_NextFreeSlot++;
+			uint32_t slot = m_FreeSlots.back();
+			m_FreeSlots.pop_back();
+			m_Allocations.insert(std::make_pair(key, slot));
+			return slot;
 		}
 		return itr->second;
 	}
+	
+	// Func for reserving binding slots with the original reg number.
+	// Used for fragment shader UAVs (SetRandomWriteTarget etc).
+	void ReserveBindingSlot(uint32_t regNo, BindType type)
+	{
+		uint32_t key = regNo | (uint32_t(type) << 16);
+		m_Allocations.insert(std::make_pair(key, regNo));
+		
+		// Remove regNo from free slots
+		for (int i = m_FreeSlots.size() - 1; i >= 0; i--)
+		{
+			if (m_FreeSlots[i] == regNo)
+			{
+				m_FreeSlots.erase(m_FreeSlots.begin() + i);
+				return;
+			}
+		}
+	}
 
 private:
-	uint32_t m_NextFreeSlot;
+	std::vector<uint32_t> m_FreeSlots;
+};
+
+struct SamplerDesc
+{
+	std::string name;
+	uint32_t reg, slot;
+};
+struct TextureSamplerDesc
+{
+	std::string name;
+	int textureBind, samplerBind;
+	HLSLCC_TEX_DIMENSION dim;
+	bool uav;
 };
 
 
@@ -61,7 +96,12 @@ class ToMetal : public Translator
 protected:
 	GLLang language;
 public:
-	explicit ToMetal(HLSLCrossCompilerContext *ctx) : Translator(ctx), m_ShadowSamplerDeclared(false) {}
+	explicit ToMetal(HLSLCrossCompilerContext *ctx)
+        : Translator(ctx)
+        , m_ShadowSamplerDeclared(false)
+        , m_NeedFBOutputRemapDecl(false)
+        , m_NeedFBInputRemapDecl(false)
+    {}
 
 	virtual bool Translate();
 	virtual void TranslateDeclaration(const Declaration *psDecl);
@@ -75,6 +115,8 @@ private:
 
 	void DeclareBuiltinInput(const Declaration *psDecl);
 	void DeclareBuiltinOutput(const Declaration *psDecl);
+	void DeclareClipPlanes(const Declaration* decl, unsigned declCount);
+	void GenerateTexturesReflection(HLSLccReflection* refl);
 
 	// Retrieve the name of the output struct for this shader
 	std::string GetOutputStructName() const;
@@ -88,7 +130,7 @@ private:
 	void DeclareStructType(const std::string &name, const std::vector<ShaderVarType> &contents, bool withinCB = false, uint32_t cumulativeOffset = 0);
 	void DeclareStructVariable(const std::string &parentName, const ShaderVar &var, bool withinCB = false, uint32_t cumulativeOffset = 0);
 	void DeclareStructVariable(const std::string &parentName, const ShaderVarType &var, bool withinCB = false, uint32_t cumulativeOffset = 0);
-	void DeclareBufferVariable(const Declaration *psDecl, const bool isRaw, const bool isUAV);
+	void DeclareBufferVariable(const Declaration *psDecl, bool isRaw, bool isUAV);
 
 	void DeclareResource(const Declaration *psDecl);
 	void TranslateResourceTexture(const Declaration* psDecl, uint32_t samplerCanDoShadowCmp, HLSLCC_TEX_DIMENSION texDim);
@@ -174,11 +216,18 @@ private:
 	// A <function name, body text> map of extra helper functions we'll need.
 	FunctionDefinitions m_FunctionDefinitions;
 
-	BindingSlotAllocator m_TextureSlots;
+	BindingSlotAllocator m_TextureSlots, m_SamplerSlots;
 	BindingSlotAllocator m_BufferSlots;
+
+	std::vector<SamplerDesc> m_Samplers;
+	std::vector<TextureSamplerDesc> m_Textures;
 
 	std::string m_ExtraGlobalDefinitions;
 
+    // Flags for whether we need to add the declaration for the FB IO remaps
+    bool m_NeedFBInputRemapDecl;
+    bool m_NeedFBOutputRemapDecl;
+    
 	bool m_ShadowSamplerDeclared;
 
 	void EnsureShadowSamplerDeclared();
@@ -188,6 +237,9 @@ private:
 
 	// Move all lowp -> mediump
 	void ClampPartialPrecisions();
+	
+	// Reseve UAV slots in advance to match the original HLSL bindings -> correct bindings in SetRandomWriteTarget()
+	void ReserveUAVBindingSlots(ShaderPhase *phase);
 };
 
 

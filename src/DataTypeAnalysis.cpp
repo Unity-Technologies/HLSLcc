@@ -250,11 +250,10 @@ void HLSLcc::DataTypeAnalysis::SetDataTypes(HLSLCrossCompilerContext* psContext,
 		// Only ever to int->float promotion (or int->uint), never the other way around
 		for (i = 0; i < (uint32_t)instructions.size(); ++i, psInst++)
 		{
-			int k = 0;
 			if (psInst->ui32NumOperands == 0)
 				continue;
 #ifdef _DEBUG
-			for (k = 0; k < (int)psInst->ui32NumOperands; k++)
+			for (int k = 0; k < (int)psInst->ui32NumOperands; k++)
 			{
 				if (psInst->asOperands[k].eType == OPERAND_TYPE_TEMP)
 				{

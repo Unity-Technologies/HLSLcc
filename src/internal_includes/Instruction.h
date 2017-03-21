@@ -30,6 +30,8 @@ struct Instruction
 	, m_SkipTranslation(false)
 	, m_InductorRegister(0)
 	, bSaturate(0)
+	, m_IsStaticBranch(false)
+	, m_StaticBranchCondition(NULL)
 	{
 		m_LoopInductors[0] = m_LoopInductors[1] = m_LoopInductors[2] = m_LoopInductors[3] = 0;
 	}
@@ -85,6 +87,20 @@ struct Instruction
 		asOperands[3].eSelMode = OPERAND_4_COMPONENT_MASK_MODE;
 	}
 
+	// Returns true if this instruction is a conditional branch
+	bool IsConditionalBranchInstruction() const
+	{
+		switch (eOpcode)
+		{
+		case OPCODE_IF:
+		case OPCODE_BREAKC:
+		case OPCODE_CONTINUEC:
+		case OPCODE_RETC:
+			return true;
+		default:
+			return false;
+		}
+	}
 
 	bool IsPartialPrecisionSamplerInstruction(const ShaderInfo &info, OPERAND_MIN_PRECISION *pType) const;
 
@@ -113,6 +129,10 @@ struct Instruction
 	RESOURCE_RETURN_TYPE xType, yType, zType, wType;
 	RESOURCE_DIMENSION eResDim;
 	int8_t iCausedSplit; // Nonzero if has caused a temp split. Later used by sampler datatype tweaking
+
+	bool m_IsStaticBranch; // If true, this instruction is a static branch
+	const Instruction *m_StaticBranchCondition; // If this is a static branch, this instruction points to the condition instruction. Can also be NULL if the operand itself is the condition
+	std::string m_StaticBranchName; // The name of the static branch variable, with the condition encoded in it.
 
 	struct Use
 	{

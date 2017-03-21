@@ -36,9 +36,13 @@ bool ToMetal::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::I
 		if (outSkipPrefix != NULL) *outSkipPrefix = true;
 		return true;
 	case NAME_CLIP_DISTANCE:
-		result = "mtl_ClipDistance";
+	{
+		// this is temp variabe, declaration and redirecting to actual output is handled in DeclareClipPlanes
+		char tmpName[128]; sprintf(tmpName, "phase%d_ClipDistance%d", psContext->currentPhase, sig->ui32SemanticIndex);
+		result = tmpName;
 		if (outSkipPrefix != NULL) *outSkipPrefix = true;
 		return true;
+	}
 		/*	case NAME_VIEWPORT_ARRAY_INDEX:
 		result = "gl_ViewportIndex";
 		if (puiIgnoreSwizzle)
@@ -179,6 +183,80 @@ void ToMetal::DeclareBuiltinInput(const Declaration *psDecl)
 	}
 }
 
+void ToMetal::DeclareClipPlanes(const Declaration* decl, unsigned declCount)
+{
+	unsigned planeCount = 0;
+	for(unsigned i = 0, n = declCount ; i < n ; ++i)
+	{
+		const Operand* operand = &decl[i].asOperands[0];
+		if(operand->eSpecialName == NAME_CLIP_DISTANCE)
+			planeCount += operand->GetMaxComponent();
+	}
+	if(planeCount == 0) return;
+
+	std::ostringstream oss; oss << "float mtl_ClipDistance [[ clip_distance ]]";
+	if(planeCount > 1) oss << "[" << planeCount << "]";
+	m_StructDefinitions[GetOutputStructName()].m_Members.push_back(oss.str());
+
+	Shader* shader = psContext->psShader;
+
+	unsigned compCount = 1;
+	const ShaderInfo::InOutSignature* psFirstClipSignature;
+	if(shader->sInfo.GetOutputSignatureFromSystemValue(NAME_CLIP_DISTANCE, 0, &psFirstClipSignature))
+	{
+		if(psFirstClipSignature->ui32Mask & (1 << 3)) 		compCount = 4;
+		else if(psFirstClipSignature->ui32Mask & (1 << 2))	compCount = 3;
+		else if(psFirstClipSignature->ui32Mask & (1 << 1))	compCount = 2;
+	}
+
+	ShaderPhase* phase = &shader->asPhases[psContext->currentPhase];
+	for(unsigned i = 0, n = declCount ; i < n ; ++i)
+	{
+		const Operand* operand = &decl[i].asOperands[0];
+		if(operand->eSpecialName != NAME_CLIP_DISTANCE) continue;
+
+		const ShaderInfo::InOutSignature* signature = 0;
+		shader->sInfo.GetOutputSignatureFromRegister(operand->ui32RegisterNumber, operand->ui32CompMask, 0, &signature);
+		const int semanticIndex = signature->ui32SemanticIndex;
+
+		bformata(phase->earlyMain, "    float4 phase%d_ClipDistance%d;\n", psContext->currentPhase, signature->ui32SemanticIndex);
+
+		const char* swizzleStr[] = { "x", "y", "z", "w" };
+		phase->hasPostShaderCode = 1;
+		if(planeCount > 1)
+		{
+			for(int i = 0 ; i < compCount ; ++i)
+			{
+				bformata(phase->postShaderCode, "    %s.mtl_ClipDistance[%d] = phase%d_ClipDistance%d.%s;\n",
+					"output", semanticIndex*compCount + i, psContext->currentPhase, semanticIndex, swizzleStr[i]
+				);
+			}
+		}
+		else
+		{
+			bformata(phase->postShaderCode, "    %s.mtl_ClipDistance = phase%d_ClipDistance%d.x;\n", "output", psContext->currentPhase, semanticIndex);
+		}
+	}
+}
+void ToMetal::GenerateTexturesReflection(HLSLccReflection* refl)
+{
+	for(unsigned i = 0, n = m_Textures.size() ; i < n ; ++i)
+	{
+		const std::string samplerName1 = m_Textures[i].name, samplerName2 = "sampler"+m_Textures[i].name;
+		for(unsigned j = 0, m = m_Samplers.size() ; j < m ; ++j)
+		{
+			if(m_Samplers[j].name == samplerName1 || m_Samplers[j].name == samplerName2)
+			{
+				m_Textures[i].samplerBind = m_Samplers[j].slot;
+				break;
+			}
+		}
+	}
+
+	for(unsigned i = 0, n = m_Textures.size() ; i < n ; ++i)
+		refl->OnTextureBinding(m_Textures[i].name, m_Textures[i].textureBind, m_Textures[i].samplerBind, m_Textures[i].dim, m_Textures[i].uav);
+}
+
 void ToMetal::DeclareBuiltinOutput(const Declaration *psDecl)
 {
 	std::string out = GetOutputStructName();
@@ -198,7 +276,7 @@ void ToMetal::DeclareBuiltinOutput(const Declaration *psDecl)
 #endif
 			break;
 		case NAME_CLIP_DISTANCE:
-			m_StructDefinitions[out].m_Members.push_back("float4 mtl_ClipDistance [[ clip_distance ]]");
+			// it will be done separately in DeclareClipPlanes
 			break;
 
 		case NAME_VIEWPORT_ARRAY_INDEX:
@@ -329,7 +407,6 @@ void ToMetal::HandleOutputRedirect(const Declaration *psDecl, const std::string 
 {
 	const Operand *psOperand = &psDecl->asOperands[0];
 	Shader *psShader = psContext->psShader;
-	bstring glsl = *psContext->currentGLSLString;
 	int needsRedirect = 0;
 	const ShaderInfo::InOutSignature *psSig = NULL;
 
@@ -425,7 +502,6 @@ void ToMetal::HandleInputRedirect(const Declaration *psDecl, const std::string &
 {
 	Operand *psOperand = (Operand *)&psDecl->asOperands[0];
 	Shader *psShader = psContext->psShader;
-	bstring glsl = *psContext->currentGLSLString;
 	int needsRedirect = 0;
 	const ShaderInfo::InOutSignature *psSig = NULL;
 
@@ -525,7 +601,7 @@ void ToMetal::HandleInputRedirect(const Declaration *psDecl, const std::string &
 }
 
 static std::string TranslateResourceDeclaration(HLSLCrossCompilerContext* psContext,
-	const Declaration *psDecl,
+	const Declaration *psDecl, const std::string& textureName,
 	bool isDepthSampler, bool isUAV)
 {
 	std::ostringstream oss;
@@ -591,7 +667,15 @@ static std::string TranslateResourceDeclaration(HLSLCrossCompilerContext* psCont
 			access = "read";
 	}
 
-	std::string typeName = HLSLcc::GetConstructorForTypeMetal(HLSLcc::ResourceReturnTypeToSVTType(eType, ePrec), 1);
+	SHADER_VARIABLE_TYPE svtType = HLSLcc::ResourceReturnTypeToSVTType(eType, ePrec);
+	std::string typeName = HLSLcc::GetConstructorForTypeMetal(svtType, 1);
+
+	if ((textureName == "_CameraDepthTexture" || textureName == "_LastCameraDepthTexture") && svtType != SVT_FLOAT)
+	{
+		std::string msg = textureName + " should be float on Metal (use sampler2D or sampler2D_float). Incorrect type "
+						  "can cause Metal validation failures or undefined results on some devices.";
+		psContext->m_Reflection.OnDiagnostics(msg, 0, false);
+	}
 
 	switch (eDimension)
 	{
@@ -870,19 +954,16 @@ void ToMetal::DeclareConstantBuffer(const ConstantBuffer *psCBuf, uint32_t ui32B
 
 }
 
-void ToMetal::DeclareBufferVariable(const Declaration *psDecl, const bool isRaw, const bool isUAV)
+void ToMetal::DeclareBufferVariable(const Declaration *psDecl, bool isRaw, bool isUAV)
 {
-	uint32_t ui32BindingPoint = psDecl->asOperands[0].ui32RegisterNumber;
-	std::string BufName, BufType;
+	uint32_t regNo = psDecl->asOperands[0].ui32RegisterNumber;
+	std::string BufName, BufType, BufConst;
 
 	BufName = "";
 	BufType = "";
+	BufConst = "";
 
-	// Use original HLSL bindings for UAVs only. For non-UAV buffers we have resolved new binding points from the same register space.
-	if (!isUAV)
-		ui32BindingPoint = psContext->psShader->aui32StructuredBufferBindingPoints[psContext->psShader->ui32CurrentStructuredBufferIndex++];
-
-	BufName = ResourceName(isUAV ? RGROUP_UAV : RGROUP_TEXTURE, psDecl->asOperands[0].ui32RegisterNumber);
+	BufName = ResourceName(isUAV ? RGROUP_UAV : RGROUP_TEXTURE, regNo);
 
 	if (!isRaw) // declare struct containing uint array when needed
 	{
@@ -898,7 +979,8 @@ void ToMetal::DeclareBufferVariable(const Declaration *psDecl, const bool isRaw,
 	
 	if (!isUAV || ((psDecl->sUAV.ui32AccessFlags & ACCESS_FLAG_WRITE) == 0))
 	{
-		oss << "const ";
+		BufConst =  "const ";
+		oss << BufConst;
 	}
 	else
 	{	
@@ -911,11 +993,138 @@ void ToMetal::DeclareBufferVariable(const Declaration *psDecl, const bool isRaw,
 	else
 		oss << "device " << BufType << " *" << BufName;
 
-	uint32_t loc = m_BufferSlots.GetBindingSlot(ui32BindingPoint, BindingSlotAllocator::RWBuffer);
+	uint32_t loc = m_BufferSlots.GetBindingSlot(regNo, isUAV ? BindingSlotAllocator::RWBuffer : BindingSlotAllocator::Texture);
 	oss << " [[ buffer(" << loc << ") ]]";
 
 	m_StructDefinitions[""].m_Members.push_back(oss.str());
 	psContext->m_Reflection.OnBufferBinding(BufName, loc, isUAV);
+	
+	
+	// In addition to the actual declaration, we need pointer modification and possible counter declaration
+	// in early main:
+	std::ostringstream earlymainoss;
+	
+	// Possible counter is always in the beginning of the buffer
+	if (isUAV && psDecl->sUAV.bCounter)
+	{
+		earlymainoss << "    device atomic_uint *" << BufName << "_counter = reinterpret_cast<device atomic_uint *> (" << BufName << ");\n";
+	}
+	
+	// Some GPUs don't allow memory access below buffer binding offset in the shader so always bind compute buffer
+	// at offset 0 instead of GetDataOffset().
+	// We can't tell at shader compile time if the buffer actually has counter or not. Therefore we'll always reserve
+	// space for the counter and bump the data pointer to beginning of the actual data here.
+	earlymainoss << "    " << BufName << " = reinterpret_cast<" << BufConst
+		<< "device " << (isRaw ? "uint" : BufType) << " *> (reinterpret_cast<device "
+		<< BufConst << "atomic_uint *> (" << BufName << ") + 1);\n";
+	
+	bformata(psContext->psShader->asPhases[psContext->currentPhase].earlyMain, earlymainoss.str().c_str());
+}
+
+
+static int ParseInlineSamplerWrapMode(const std::string& samplerName, const std::string& wrapName)
+{
+	int res = 0;
+	const bool hasWrap = (samplerName.find(wrapName) != std::string::npos);
+	if (!hasWrap)
+		return res;
+
+	const bool hasU = (samplerName.find(wrapName + 'u') != std::string::npos);
+	const bool hasV = (samplerName.find(wrapName + 'v') != std::string::npos);
+	const bool hasW = (samplerName.find(wrapName + 'w') != std::string::npos);
+
+	if (hasWrap) res |= 1;
+	if (hasU) res |= 2;
+	if (hasV) res |= 4;
+	if (hasW) res |= 8;
+	return res;
+}
+
+
+static bool EmitInlineSampler(HLSLCrossCompilerContext* ctx, const std::string& name)
+{
+	// See if it's a sampler that goes with the texture, or an "inline" sampler
+	// where sampler states are hardcoded in the shader directly.
+	//
+	// The logic for "inline" samplers below must match what is recognized
+	// by other shader platforms in Unity (ParseInlineSamplerName function
+	// in the shader compiler).
+	
+	std::string samplerName(name); std::transform(samplerName.begin(), samplerName.end(), samplerName.begin(), ::tolower);
+	
+	// filter modes
+	const bool hasPoint = (samplerName.find("point") != std::string::npos);
+	const bool hasTrilinear = (samplerName.find("trilinear") != std::string::npos);
+	const bool hasLinear = (samplerName.find("linear") != std::string::npos);
+	const bool hasAnyFilter = hasPoint || hasTrilinear || hasLinear;
+	
+	// wrap modes
+	const int bitsClamp = ParseInlineSamplerWrapMode(samplerName, "clamp");
+	const int bitsRepeat = ParseInlineSamplerWrapMode(samplerName, "repeat");
+	const int bitsMirror = ParseInlineSamplerWrapMode(samplerName, "mirror");
+	const int bitsMirrorOnce = ParseInlineSamplerWrapMode(samplerName, "mirroronce");
+	
+	const bool hasAnyWrap = bitsClamp != 0 || bitsRepeat != 0 || bitsMirror != 0 || bitsMirrorOnce != 0;
+	
+	// depth comparison
+	const bool hasCompare = (samplerName.find("compare") != std::string::npos);
+	
+	// name must contain a filter mode and a wrap mode at least
+	if (!hasAnyFilter || !hasAnyWrap)
+	{
+		return false;
+	}
+	
+	bstring str = ctx->psShader->asPhases[ctx->currentPhase].earlyMain;
+	bformata(str, "\tconstexpr sampler %s(", name.c_str());
+
+	if (hasCompare)
+		bformata(str, "compare_func::greater_equal,");
+
+	if (hasTrilinear)
+		bformata(str, "filter::linear,mip_filter::linear,");
+	else if (hasLinear)
+		bformata(str, "filter::linear,");
+	else
+		bformata(str, "filter::nearest,");
+
+	const char* kTexWrapClamp = "clamp_to_edge";
+	const char* kTexWrapRepeat = "repeat";
+	const char* kTexWrapMirror = "mirrored_repeat";
+	const char* kTexWrapMirrorOnce = "mirrored_repeat"; // currently Metal shading language does not have syntax for inline sampler state that would do "mirror clamp to edge"
+	const char* wrapU = kTexWrapRepeat;
+	const char* wrapV = kTexWrapRepeat;
+	const char* wrapW = kTexWrapRepeat;
+
+	if (bitsClamp == 1)				wrapU = wrapV = wrapW = kTexWrapClamp;
+	else if (bitsRepeat == 1)		wrapU = wrapV = wrapW = kTexWrapRepeat;
+	else if (bitsMirrorOnce == 1)	wrapU = wrapV = wrapW = kTexWrapMirrorOnce;
+	else if (bitsMirror == 1)		wrapU = wrapV = wrapW = kTexWrapMirror;
+
+	if ((bitsClamp & 2) != 0)	wrapU = kTexWrapClamp;
+	if ((bitsClamp & 4) != 0)	wrapV = kTexWrapClamp;
+	if ((bitsClamp & 8) != 0)	wrapW = kTexWrapClamp;
+
+	if ((bitsRepeat & 2) != 0)	wrapU = kTexWrapRepeat;
+	if ((bitsRepeat & 4) != 0)	wrapV = kTexWrapRepeat;
+	if ((bitsRepeat & 8) != 0)	wrapW = kTexWrapRepeat;
+
+	if ((bitsMirrorOnce & 2) != 0)	wrapU = kTexWrapMirrorOnce;
+	if ((bitsMirrorOnce & 4) != 0)	wrapV = kTexWrapMirrorOnce;
+	if ((bitsMirrorOnce & 8) != 0)	wrapW = kTexWrapMirrorOnce;
+
+	if ((bitsMirror & 2) != 0)	wrapU = kTexWrapMirror;
+	if ((bitsMirror & 4) != 0)	wrapV = kTexWrapMirror;
+	if ((bitsMirror & 8) != 0)	wrapW = kTexWrapMirror;
+
+	if (wrapU == wrapV && wrapU == wrapW)
+		bformata(str, "address::%s", wrapU);
+	else
+		bformata(str, "s_address::%s,t_address::%s,r_address::%s", wrapU, wrapV, wrapW);
+
+	bformata(str, ");\n");
+
+	return true;
 }
 
 
@@ -946,12 +1155,10 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 
 		std::string name = psContext->GetDeclaredInputName(psOperand, nullptr, 1, nullptr);
 
-		//Already declared as part of an array?
-		if (psShader->aIndexedInput[0][psDecl->asOperands[0].ui32RegisterNumber] == -1)
-		{
-			ASSERT(0); // Find out what's happening
-			break;
-		}
+		// NB: unlike GL we keep arrays of 2-component vectors as is (without collapsing into float4)
+		// if(psShader->aIndexedInput[0][psDecl->asOperands[0].ui32RegisterNumber] == -1)
+		//     break;
+
 		// Already declared?
 		if ((ui32CompMask != 0) && ((ui32CompMask & ~psShader->acInputDeclared[0][ui32Reg]) == 0))
 		{
@@ -1041,7 +1248,8 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 				//
 				// TODO: Improve later when GLES3 support arrives, it requires
 				// single declaration through inout
-				oss << "color(" << psSig->ui32SemanticIndex << ")";
+				oss << "color(xlt_remap_i[" << psSig->ui32SemanticIndex << "])";
+                m_NeedFBInputRemapDecl = true;
 			}
 			else
 			{
@@ -1115,6 +1323,49 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 		const ConstantBuffer* psCBuf = NULL;
 		psContext->psShader->sInfo.GetConstantBufferFromBindingPoint(RGROUP_CBUFFER, psDecl->asOperands[0].aui32ArraySizes[0], &psCBuf);
 		ASSERT(psCBuf != NULL);
+
+		if (psCBuf->name.substr(0, 20) == "hlslcc_SubpassInput_" && psCBuf->name.length() >= 23 && !psCBuf->asVars.empty())
+		{
+			// Special case for framebuffer fetch.
+			char ty = psCBuf->name[20];
+			int idx = psCBuf->name[22] - '0';
+
+			const ShaderVar &sv = psCBuf->asVars[0];
+			if (sv.name.substr(0, 15) == "hlslcc_fbinput_")
+			{
+				// Pick up the type and index
+				std::ostringstream oss;
+                m_NeedFBInputRemapDecl = true;
+				switch (ty)
+				{
+				case 'f':
+				case 'F':
+					oss << "float4 " << sv.name << " [[ color(xlt_remap_i["<< idx <<"]) ]]";
+					m_StructDefinitions[""].m_Members.push_back(oss.str());
+					break;
+				case 'h':
+				case 'H':
+					oss << "half4 " << sv.name << " [[ color(xlt_remap_i[" << idx << "]) ]]";
+					m_StructDefinitions[""].m_Members.push_back(oss.str());
+					break;
+				case 'i':
+				case 'I':
+					oss << "int4 " << sv.name << " [[ color(xlt_remap_i[" << idx << "]) ]]";
+					m_StructDefinitions[""].m_Members.push_back(oss.str());
+					break;
+				case 'u':
+				case 'U':
+					oss << "uint4 " << sv.name << " [[ color(xlt_remap_i[" << idx << "]) ]]";
+					m_StructDefinitions[""].m_Members.push_back(oss.str());
+					break;
+				default:
+					break;
+				}
+			}
+			// Break out so this doesn't get declared. 
+			break;
+		}
+
 		DeclareConstantBuffer(psCBuf, psDecl->asOperands[0].aui32ArraySizes[0]);
 		break;
 	}
@@ -1373,9 +1624,9 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 				uint32_t destMask = psDecl->asOperands[0].ui32CompMask;
 				uint32_t rebase = 0;
 				const ShaderInfo::InOutSignature *psSig = NULL;
-				uint32_t regSpace = psDecl->asOperands[0].GetRegisterSpace(psContext) == 0;
+				uint32_t regSpace = psDecl->asOperands[0].GetRegisterSpace(psContext);
 
-				if (regSpace)
+				if (regSpace == 0)
 					if (isInput)
 						psContext->psShader->sInfo.GetInputSignatureFromRegister(startReg + i, destMask, &psSig);
 					else
@@ -1414,8 +1665,9 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 							}
 						}
 					}
-					bcatcstr(glsl, " = ");
-					bcatcstr(glsl, realName.c_str());
+
+					// for some reason input struct is missed here from GetDeclaredInputName result, so add it manually
+					bformata(glsl, " = input.%s", realName.c_str());
 					if (destMask != OPERAND_4_COMPONENT_MASK_ALL && destMask != psSig->ui32Mask)
 					{
 						int k;
@@ -1537,25 +1789,20 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 	}
 	case OPCODE_DCL_SAMPLER:
 	{
-		// Find out if the sampler is good for a builtin
 		std::string name = TranslateOperand(&psDecl->asOperands[0], TO_FLAG_NAME_ONLY);
-		std::transform(name.begin(), name.end(), name.begin(), ::tolower);
-		bool linear = (name.find("linear") != std::string::npos);
-		bool point = (name.find("point") != std::string::npos);
-		bool clamp = (name.find("clamp") != std::string::npos);
-		bool repeat = (name.find("repeat") != std::string::npos);
 		
-		// Declare only builtin samplers here. Default samplers are declared together with the texture.
-		if ((linear != point) && (clamp != repeat))
+		if (!EmitInlineSampler(psContext, name))
 		{
-			std::ostringstream oss;
-			oss << "constexpr sampler " << TranslateOperand(&psDecl->asOperands[0], TO_FLAG_NAME_ONLY) << "(";
-			oss << (linear ? "filter::linear, " : "filter::nearest, ");
-			oss << (clamp ? "address::clamp_to_edge" : "address::repeat");
-			oss << ")";
-			
-			bformata(psContext->psShader->asPhases[psContext->currentPhase].earlyMain, "\t%s;\n", oss.str().c_str());
+			// for some reason we have some samplers start with "sampler" and some not
+			const bool startsWithSampler = name.find("sampler") == 0;
+			const uint32_t slot = m_SamplerSlots.GetBindingSlot(psDecl->asOperands[0].ui32RegisterNumber, BindingSlotAllocator::Texture);
+			std::ostringstream oss; oss << "sampler " << (startsWithSampler ? "" : "sampler") << name << " [[ sampler (" << slot << ") ]]";
+			m_StructDefinitions[""].m_Members.push_back(oss.str());
+
+			SamplerDesc desc = { name, psDecl->asOperands[0].ui32RegisterNumber, slot };
+			m_Samplers.push_back(desc);
 		}
+
 		break;
 	}
 	case OPCODE_DCL_HS_MAX_TESSFACTOR:
@@ -1565,57 +1812,48 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 	}
 	case OPCODE_DCL_UNORDERED_ACCESS_VIEW_TYPED:
 	{
-		std::string samplerTypeName = TranslateResourceDeclaration(psContext,
-			psDecl, false, true);
+		// A hack to support single component 32bit RWBuffers: Declare as raw buffer.
+		// TODO: Use textures for RWBuffers when the scripting API has actual format selection etc
+		// way to flag the created ComputeBuffer as typed. Even then might want to leave this 
+		// hack path for 32bit (u)int typed buffers to continue support atomic ops on those formats.
+		if (psDecl->value.eResourceDimension == RESOURCE_DIMENSION_BUFFER)
+		{
+			DeclareBufferVariable(psDecl, true, true);
+			break;
+		}
 		std::string texName = ResourceName(RGROUP_UAV, psDecl->asOperands[0].ui32RegisterNumber);
+		std::string samplerTypeName = TranslateResourceDeclaration(psContext, psDecl, texName, false, true);
 		uint32_t slot = m_TextureSlots.GetBindingSlot(psDecl->asOperands[0].ui32RegisterNumber, BindingSlotAllocator::UAV);		std::ostringstream oss;
 		oss << samplerTypeName << " " << texName
 			<< " [[ texture (" << slot << ") ]] ";
 
 		m_StructDefinitions[""].m_Members.push_back(oss.str());
-		psContext->m_Reflection.OnTextureBinding(texName, slot, TD_2D, true); // TODO: translate psDecl->value.eResourceDimension into HLSLCC_TEX_DIMENSION
+
+		// TODO: translate psDecl->value.eResourceDimension into HLSLCC_TEX_DIMENSION
+		TextureSamplerDesc desc = {texName, (int)slot, -1, TD_2D, true};
+		m_Textures.push_back(desc);
 
 		break;
 	}
 
 	case OPCODE_DCL_UNORDERED_ACCESS_VIEW_STRUCTURED:
 	{
-		if (psDecl->sUAV.bCounter)
-		{
-			std::ostringstream oss;
-			std::string bufName = ResourceName(RGROUP_UAV, psDecl->asOperands[0].ui32RegisterNumber);
-			
-			// Some GPUs don't allow memory access below buffer binding offset in the shader so always bind compute buffer
-			// at offset 0 instead of GetDataOffset() to access counter value and translate the buffer pointer in the shader.
-			oss << "device atomic_uint *" << bufName << "_counter = reinterpret_cast<device atomic_uint *> (" << bufName << ");";
-			oss << "\n    " << bufName << " = reinterpret_cast<device " << bufName << "_Type *> (reinterpret_cast<device atomic_uint *> (" << bufName << ") + 1)";
-			bformata(psContext->psShader->asPhases[psContext->currentPhase].earlyMain, "    %s;\n", oss.str().c_str());
-		}
-
-		DeclareBufferVariable(psDecl, 0, 1);
+		DeclareBufferVariable(psDecl, false, true);
 		break;
 	}
 	case OPCODE_DCL_UNORDERED_ACCESS_VIEW_RAW:
 	{
-		if (psDecl->sUAV.bCounter)
-		{
-			std::ostringstream oss;
-			std::string bufName = ResourceName(RGROUP_UAV, psDecl->asOperands[0].ui32RegisterNumber);
-			oss << "device atomic_uint *" << bufName << "_counter = reinterpret_cast<atomic_uint *> (" << bufName << ") - 1";
-			bformata(psContext->psShader->asPhases[psContext->currentPhase].earlyMain, "\t%s;\n", oss.str().c_str());		}
-
-		DeclareBufferVariable(psDecl, 1, 1);
-
+		DeclareBufferVariable(psDecl, true, true);
 		break;
 	}
 	case OPCODE_DCL_RESOURCE_STRUCTURED:
 	{
-		DeclareBufferVariable(psDecl, 0, 0);
+		DeclareBufferVariable(psDecl, false, false);
 		break;
 	}
 	case OPCODE_DCL_RESOURCE_RAW:
 	{
-		DeclareBufferVariable(psDecl, 1, 0);
+		DeclareBufferVariable(psDecl, true, false);
 		break;
 	}
 	case OPCODE_DCL_THREAD_GROUP_SHARED_MEMORY_STRUCTURED:
@@ -1718,22 +1956,19 @@ std::string ToMetal::ResourceName(ResourceGroup group, const uint32_t ui32Regist
 void ToMetal::TranslateResourceTexture(const Declaration* psDecl, uint32_t samplerCanDoShadowCmp, HLSLCC_TEX_DIMENSION texDim)
 {
 
+	std::string texName = ResourceName(RGROUP_TEXTURE, psDecl->asOperands[0].ui32RegisterNumber);
 	std::string samplerTypeName = TranslateResourceDeclaration(psContext,
-		psDecl, (samplerCanDoShadowCmp && psDecl->ui32IsShadowTex), false);
+		psDecl, texName, (samplerCanDoShadowCmp && psDecl->ui32IsShadowTex), false);
 
 	uint32_t slot = m_TextureSlots.GetBindingSlot(psDecl->asOperands[0].ui32RegisterNumber, BindingSlotAllocator::Texture);
-	std::string texName = ResourceName(RGROUP_TEXTURE, psDecl->asOperands[0].ui32RegisterNumber);
 	std::ostringstream oss;
 	oss << samplerTypeName << " " << texName
 		<< " [[ texture (" << slot << ") ]] ";
 
 	m_StructDefinitions[""].m_Members.push_back(oss.str());
-	psContext->m_Reflection.OnTextureBinding(texName, slot, texDim, false);
-	oss.str("");
-	// the default sampler for a texture is named after the texture with a "sampler" prefix
-	oss << "sampler sampler" << texName
-		<< " [[ sampler (" << slot << ") ]] ";
-	m_StructDefinitions[""].m_Members.push_back(oss.str());
+
+	TextureSamplerDesc desc = {texName, (int)slot, -1, texDim, false};
+	m_Textures.push_back(desc);
 
 	if (samplerCanDoShadowCmp && psDecl->ui32IsShadowTex)
 		EnsureShadowSamplerDeclared();
@@ -1746,17 +1981,21 @@ void ToMetal::DeclareResource(const Declaration *psDecl)
 	{
 		case RESOURCE_DIMENSION_BUFFER:
 		{
-			uint32_t slot = m_TextureSlots.GetBindingSlot(psDecl->asOperands[0].ui32RegisterNumber, BindingSlotAllocator::Texture);
+            // Fake single comp 32bit texel buffers by using raw buffer
+            DeclareBufferVariable(psDecl, true, false);
+            break;
+            
+			/* TODO: re-enable this code for buffer textures when sripting API has proper support for it
+            uint32_t slot = m_TextureSlots.GetBindingSlot(psDecl->asOperands[0].ui32RegisterNumber, BindingSlotAllocator::Texture);
 			std::string texName = TranslateOperand(&psDecl->asOperands[0], TO_FLAG_NAME_ONLY);
 			std::ostringstream oss;
-			oss << "device " << TranslateResourceDeclaration(psContext,
-				psDecl, false, false);
+			oss << "device " << TranslateResourceDeclaration(psContext, psDecl, texName, false, false);
 
 			oss << texName << " [[ texture(" << slot << ") ]]";
 
 			m_StructDefinitions[""].m_Members.push_back(oss.str());
 			psContext->m_Reflection.OnTextureBinding(texName, slot, TD_2D, false); //TODO: correct HLSLCC_TEX_DIMENSION?
-			break;
+			break;*/
 
 		}
 		default:
@@ -1816,7 +2055,6 @@ void ToMetal::DeclareResource(const Declaration *psDecl)
 
 void ToMetal::DeclareOutput(const Declaration *psDecl)
 {
-	bstring glsl = *psContext->currentGLSLString;
 	Shader* psShader = psContext->psShader;
 
 	if (!psContext->OutputNeedsDeclaring(&psDecl->asOperands[0], 1))
@@ -1934,7 +2172,8 @@ void ToMetal::DeclareOutput(const Declaration *psDecl)
 		default:
 		{
 			std::ostringstream oss;
-			oss << type << " " << name << " [[ color(" << psSignature->ui32SemanticIndex << ") ]]";
+			oss << type << " " << name << " [[ color(xlt_remap_o[" << psSignature->ui32SemanticIndex << "]) ]]";
+            m_NeedFBOutputRemapDecl = true;
 			m_StructDefinitions[GetOutputStructName()].m_Members.push_back(oss.str());
 		}
 		}

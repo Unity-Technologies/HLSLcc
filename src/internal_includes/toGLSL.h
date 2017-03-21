@@ -20,10 +20,17 @@ public:
 	virtual void SetIOPrefixes();
 
 private:
+	// Vulkan-only: detect which branches only depend on uniforms and immediate values and can be turned into specialization constants.
+	void IdentifyStaticBranches(ShaderPhase *psPhase);
+	void BuildStaticBranchNameForInstruction(Instruction &inst);
 
+	void DeclareSpecializationConstants(ShaderPhase &phase);
+
+	void TranslateOperand(bstring glsl, const Operand *psOp, uint32_t flags, uint32_t ui32ComponentMask = OPERAND_4_COMPONENT_MASK_ALL);
 	void TranslateOperand(const Operand *psOp, uint32_t flags, uint32_t ui32ComponentMask = OPERAND_4_COMPONENT_MASK_ALL);
 	void TranslateInstruction(Instruction* psInst, bool isEmbedded = false);
 
+	void TranslateVariableNameWithMask(bstring glsl, const Operand* psOperand, uint32_t ui32TOFlag, uint32_t* pui32IgnoreSwizzle, uint32_t ui32CompMask, int *piRebase);
 	void TranslateVariableNameWithMask(const Operand* psOperand, uint32_t ui32TOFlag, uint32_t* pui32IgnoreSwizzle, uint32_t ui32CompMask, int *piRebase);
 
 	void TranslateOperandIndex(const Operand* psOperand, int index);

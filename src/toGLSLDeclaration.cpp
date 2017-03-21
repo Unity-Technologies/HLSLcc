@@ -237,7 +237,8 @@ static void DeclareInput(
 
 		std::string locationQualifier = "";
 
-		if (HaveInOutLocationQualifier(psContext->psShader->eTargetLanguage))
+		if (HaveInOutLocationQualifier(psContext->psShader->eTargetLanguage) ||
+			((psContext->flags & HLSLCC_FLAG_NVN_TARGET) && HaveLimitedInOutLocationQualifier(psContext->psShader->eTargetLanguage, psContext->psShader->extensions)))
 		{
 			bool addLocation = false;
 
@@ -365,10 +366,9 @@ void ToGLSL::AddBuiltinOutput(const Declaration* psDecl, int arrayElements, cons
 			{
 				int max = psDecl->asOperands[0].GetMaxComponent();
 
-				if (IsESLanguage(psShader->eTargetLanguage) && !psShader->m_ClipDistanceExtensionDeclared)
+				if (IsESLanguage(psShader->eTargetLanguage))
 				{
-					bcatcstr(psContext->extensions, "#extension GL_EXT_clip_cull_distance : require\n");
-					psShader->m_ClipDistanceExtensionDeclared = true;
+					psContext->RequireExtension("GL_EXT_clip_cull_distance");
 				}
 
 				int applySwizzle = psDecl->asOperands[0].GetNumSwizzleElements() > 1 ? 1 : 0;
@@ -551,7 +551,7 @@ void ToGLSL::AddUserOutput(const Declaration* psDecl)
 		const Operand* psOperand = &psDecl->asOperands[0];
 		const char* Precision = "";
 		int iNumComponents;
-		bstring type;
+		bstring type = NULL;
 		int regSpace = psDecl->asOperands[0].GetRegisterSpace(psContext);
 		uint32_t ui32Reg = psDecl->asOperands[0].ui32RegisterNumber;
 
@@ -604,7 +604,7 @@ void ToGLSL::AddUserOutput(const Declaration* psDecl)
                 break;
 		}
 
-		if(HavePrecisionQualifers(psShader->eTargetLanguage))
+		if(HavePrecisionQualifiers(psContext))
 		{
 			switch(psOperand->eMinPrecision)
 			{
@@ -664,8 +664,7 @@ void ToGLSL::AddUserOutput(const Declaration* psDecl)
 					{
 						bcatcstr(extensions, "#ifdef GL_ARB_conservative_depth\n");
 						bcatcstr(extensions, "#extension GL_ARB_conservative_depth : enable\n");
-						bcatcstr(extensions, "layout (depth_less) out float gl_FragDepth;\n");
-						bcatcstr(glsl, "#endif\n");
+						bcatcstr(extensions, "#endif\n");
 						bcatcstr(glsl, "#ifdef GL_ARB_conservative_depth\n");
 						bcatcstr(glsl, "layout (depth_less) out float gl_FragDepth;\n");
 						bcatcstr(glsl, "#endif\n");
@@ -685,6 +684,13 @@ void ToGLSL::AddUserOutput(const Declaration* psDecl)
 							strncpy(OutputName, (char *)oname->data, 512);
 							bdestroy(oname);
 
+							bstring layoutQualifier = bformat("");
+							bool haveFramebufferFetch = (psShader->extensions->EXT_shader_framebuffer_fetch &&
+														 psShader->eShaderType == PIXEL_SHADER &&
+														 psContext->flags & HLSLCC_FLAG_SHADER_FRAMEBUFFER_FETCH);
+							if (haveFramebufferFetch)
+								bcatcstr(glsl, "#ifdef GL_EXT_shader_framebuffer_fetch\n");
+
 							if (HaveInOutLocationQualifier(psContext->psShader->eTargetLanguage) ||
 								HaveLimitedInOutLocationQualifier(psContext->psShader->eTargetLanguage, psContext->psShader->extensions))
 							{
@@ -698,15 +704,23 @@ void ToGLSL::AddUserOutput(const Declaration* psDecl)
 										renderTarget = 0;
 										index = 1;
 									}
-									bformata(glsl, "layout(location = %d, index = %d) ", renderTarget, index);
+									layoutQualifier = bformat("layout(location = %d, index = %d) ", renderTarget, index);
 								}
 								else
 								{
-									bformata(glsl, "layout(location = %d) ", renderTarget);
+									layoutQualifier = bformat("layout(location = %d) ", renderTarget);
 								}
 							}
 
-							bformata(glsl, "out %s%s %s;\n", Precision, type->data, OutputName);
+							if (haveFramebufferFetch)
+							{
+								bformata(glsl, "%sinout %s%s %s;\n", bstr2cstr(layoutQualifier, '\0'), Precision, type->data, OutputName);
+								bcatcstr(glsl, "#else\n");
+								bformata(glsl, "%sout %s%s %s;\n", bstr2cstr(layoutQualifier, '\0'), Precision, type->data, OutputName);
+								bcatcstr(glsl, "#endif\n");
+							}
+							else
+								bformata(glsl, "%sout %s%s %s;\n", bstr2cstr(layoutQualifier, '\0'), Precision, type->data, OutputName);
 						}
 						break;
 					}
@@ -1005,6 +1019,8 @@ static const char* GetSamplerType(HLSLCrossCompilerContext* psContext,
 	{
 		case RESOURCE_DIMENSION_BUFFER:
 		{
+			if (IsESLanguage(psContext->psShader->eTargetLanguage))
+				psContext->RequireExtension("GL_EXT_texture_buffer");
 			switch(eType)
 			{
 				case RETURN_TYPE_SINT:
@@ -1151,9 +1167,9 @@ static const char* GetSamplerType(HLSLCrossCompilerContext* psContext,
 	return "sampler2D";
 }
 
-static const char *GetSamplerPrecision(GLLang langVersion, REFLECT_RESOURCE_PRECISION ePrec)
+static const char *GetSamplerPrecision(const HLSLCrossCompilerContext *psContext, REFLECT_RESOURCE_PRECISION ePrec)
 {
-	if (!HavePrecisionQualifers(langVersion))
+	if (!HavePrecisionQualifiers(psContext))
 		return " ";
 
 	switch (ePrec)
@@ -1181,23 +1197,20 @@ static void TranslateResourceTexture(HLSLCrossCompilerContext* psContext, const 
 		psDecl->asOperands[0].ui32RegisterNumber);
 
 	if (psDecl->value.eResourceDimension == RESOURCE_DIMENSION_TEXTURECUBEARRAY
-		&& !HaveCubemapArray(psContext->psShader->eTargetLanguage)
-		&& !psContext->psShader->m_CubemapArrayExtensionDeclared)
+		&& !HaveCubemapArray(psContext->psShader->eTargetLanguage))
 	{
 		// Need to enable extension (either OES or ARB), but we only need to add it once
 		if (IsESLanguage(psContext->psShader->eTargetLanguage))
-			bformata(psContext->extensions, "#extension GL_OES_texture_cube_map_array : enable\n");
+			psContext->RequireExtension("GL_OES_texture_cube_map_array");
 		else
-			bformata(psContext->extensions, "#extension GL_ARB_texture_cube_map_array : enable\n");
-
-		psContext->psShader->m_CubemapArrayExtensionDeclared = true;
+			psContext->RequireExtension("GL_ARB_texture_cube_map_array");
 	}
 
 	const ResourceBinding *psBinding = NULL;
 	psShader->sInfo.GetResourceFromBindingPoint(RGROUP_TEXTURE, psDecl->asOperands[0].ui32RegisterNumber, &psBinding);
 	ASSERT(psBinding != NULL);
 
-	samplerPrecision = GetSamplerPrecision(psContext->psShader->eTargetLanguage, psBinding ? psBinding->ePrecision : REFLECT_RESOURCE_PRECISION_UNKNOWN);
+	samplerPrecision = GetSamplerPrecision(psContext, psBinding ? psBinding->ePrecision : REFLECT_RESOURCE_PRECISION_UNKNOWN);
 
 	if (psContext->flags & HLSLCC_FLAG_COMBINE_TEXTURE_SAMPLERS)
 	{
@@ -1669,7 +1682,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 					StorageQualifier = "in";
 			}
 
-			if(HavePrecisionQualifers(psShader->eTargetLanguage))
+			if(HavePrecisionQualifiers(psContext))
 			{
 				switch(psOperand->eMinPrecision)
 				{
@@ -1741,6 +1754,16 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 			const char* Interpolation = "";
 			int hasNoPerspective = psContext->psShader->eTargetLanguage <= LANG_ES_310 ? 0 : 1;
 			inputName = psContext->GetDeclaredInputName(psOperand, NULL, 1, NULL);
+
+			// If this is a SV_Target input and framebuffer fetch is enabled then skip the declaration
+			if (psShader->extensions->EXT_shader_framebuffer_fetch &&
+				psShader->eShaderType == PIXEL_SHADER &&
+				psContext->flags & HLSLCC_FLAG_SHADER_FRAMEBUFFER_FETCH)
+			{
+				if(inputName == "vs_SV_Target0")
+					break;
+			}
+
 			if (InOutSupported(psContext->psShader->eTargetLanguage))
 			{
 				StorageQualifier = "in";
@@ -1787,7 +1810,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
                     break;
 			}
 
-			if(HavePrecisionQualifers(psShader->eTargetLanguage))
+			if(HavePrecisionQualifiers(psContext))
 			{
 				switch(psOperand->eMinPrecision)
 				{
@@ -1830,7 +1853,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 		{
 			uint32_t i = 0;
 			const uint32_t ui32NumTemps = psDecl->value.ui32NumTemps;
-			bool usePrecision = (HavePrecisionQualifers(psShader->eTargetLanguage) != 0);
+			bool usePrecision = (HavePrecisionQualifiers(psContext) != 0);
 
 			for (i = 0; i < ui32NumTemps; i++)
 			{
@@ -1867,8 +1890,6 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 			const Operand* psOperand = &psDecl->asOperands[0];
 			const uint32_t ui32BindingPoint = psOperand->aui32ArraySizes[0];
 
-			const char* StageName = "VS";
-
 			const ConstantBuffer* psCBuf = NULL;
 			psContext->psShader->sInfo.GetConstantBufferFromBindingPoint(RGROUP_CBUFFER, ui32BindingPoint, &psCBuf);
 
@@ -1881,37 +1902,109 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 				bformata(glsl, "layout(std140) uniform ConstantBuffer%d {\n\tvec4 data[%d];\n} cb%d;\n", ui32BindingPoint,psOperand->aui32ArraySizes[1],ui32BindingPoint);
 				break;
 			}
-
-			switch(psContext->psShader->eShaderType)
+			
+			if (psCBuf->name.substr(0, 20) == "hlslcc_SubpassInput_" && psCBuf->name.length() >= 23 && !psCBuf->asVars.empty())
 			{
-				case PIXEL_SHADER:
+				// Special case for vulkan subpass input.
+
+				// The multisample versions have multiple members in the cbuffer, but we must only declare once.
+				// We still need to loop through all the variables and adjust names
+
+				// Pick up the type and index
+				char ty = psCBuf->name[20];
+				int idx = psCBuf->name[22] - '0';
+				bool isMS = false;
+				std::pair<uint32_t, uint32_t> binding = psContext->psDependencies->GetVulkanResourceBinding((std::string &)psCBuf->name, false, 2);
+
+				bool declared = false;
+				for (std::vector<ShaderVar>::const_iterator itr = psCBuf->asVars.begin(); itr != psCBuf->asVars.end(); itr++)
 				{
-					StageName = "PS";
-					break;
+					ShaderVar &sv = (ShaderVar &)*itr;
+					if (sv.name.substr(0, 15) == "hlslcc_fbinput_")
+					{
+						if (!declared)
+						{
+							switch (ty)
+							{
+							case 'f':
+								bformata(glsl, "layout(input_attachment_index = %d, set = %d, binding = %d) uniform highp subpassInput %s;\n", idx, binding.first, binding.second, sv.name.c_str());
+								break;
+							case 'h':
+								bformata(glsl, "layout(input_attachment_index = %d, set = %d, binding = %d) uniform mediump subpassInput %s;\n", idx, binding.first, binding.second, sv.name.c_str());
+								break;
+							case 'i':
+								bformata(glsl, "layout(input_attachment_index = %d, set = %d, binding = %d) uniform isubpassInput %s;\n", idx, binding.first, binding.second, sv.name.c_str());
+								break;
+							case 'u':
+								bformata(glsl, "layout(input_attachment_index = %d, set = %d, binding = %d) uniform usubpassInput %s;\n", idx, binding.first, binding.second, sv.name.c_str());
+								break;
+							case 'F':
+								bformata(glsl, "layout(input_attachment_index = %d, set = %d, binding = %d) uniform highp subpassInputMS %s;\n", idx, binding.first, binding.second, sv.name.substr(0, 16).c_str());
+								isMS = true;
+								break;
+							case 'H':
+								bformata(glsl, "layout(input_attachment_index = %d, set = %d, binding = %d) uniform mediump subpassInputMS %s;\n", idx, binding.first, binding.second, sv.name.substr(0, 16).c_str());
+								isMS = true;
+								break;
+							case 'I':
+								bformata(glsl, "layout(input_attachment_index = %d, set = %d, binding = %d) uniform isubpassInputMS %s;\n", idx, binding.first, binding.second, sv.name.substr(0, 16).c_str());
+								isMS = true;
+								break;
+							case 'U':
+								bformata(glsl, "layout(input_attachment_index = %d, set = %d, binding = %d) uniform usubpassInputMS %s;\n", idx, binding.first, binding.second, sv.name.substr(0, 16).c_str());
+								isMS = true;
+								break;
+							default:
+								break;
+							}
+							declared = true;
+						}
+						else
+						{
+							if (ty == 'F' || ty == 'I' || ty == 'U')
+								isMS = true;
+						}
+						// Munge the name so it'll get the correct function call in GLSL directly
+						sv.name.insert(0, "subpassLoad(");
+						if (isMS)
+							sv.name[sv.name.length() - 2] = ',';
+						sv.name.append(")");
+						// Also update the type name
+						sv.sType.name = sv.name;
+						sv.sType.fullName = sv.name;
+					}
 				}
-				case HULL_SHADER:
+
+				// Break out so this doesn't get declared. 
+				break;
+			}
+
+			if(psCBuf->name == "OVR_multiview")
+			{
+				// Special case for piggy-backing multiview info out
+				// This is not really a cbuffer, but if we see this being accessed, we know we need viewID
+				
+				// Extract numViews
+				uint32_t numViews = 0;
+				for(std::vector<ShaderVar>::const_iterator itr = psCBuf->asVars.begin(); itr != psCBuf->asVars.end(); itr++)
 				{
-					StageName = "HS";
-					break;
+					if(strncmp(itr->name.c_str(), "numViews_", 9) == 0)
+					{
+						// I really don't think we'll ever have more than 9 multiviews
+						numViews = itr->name[9] - '0';
+						break;
+					}
 				}
-				case DOMAIN_SHADER:
+				if(numViews > 0 && numViews < 10)
 				{
-					StageName = "DS";
-					break;
-				}
-				case GEOMETRY_SHADER:
-				{
-					StageName = "GS";
-					break;
-				}
-				case COMPUTE_SHADER:
-				{
-					StageName = "CS";
-					break;
-				}
-				default:
-				{
-					break;
+					bcatcstr(extensions, "#extension GL_OVR_multiview : require\n");
+					bcatcstr(extensions, "#extension GL_OVR_multiview2 : enable\n");
+
+					if(psShader->eShaderType == VERTEX_SHADER)
+						bformata(glsl, "layout(num_views = %d) in;\n", numViews);
+					
+					break; // Break out so we don't actually declare this cbuffer
+
 				}
 			}
 
@@ -1934,7 +2027,9 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 		}
 		case OPCODE_DCL_RESOURCE:
 		{
-			if (HaveUniformBindingsAndLocations(psContext->psShader->eTargetLanguage, psContext->psShader->extensions, psContext->flags))
+			// Skip the location declaration on Vulkan
+			if (HaveUniformBindingsAndLocations(psContext->psShader->eTargetLanguage, psContext->psShader->extensions, psContext->flags)
+				&& ((psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) == 0))
 			{
 				// Explicit layout bindings are not currently compatible with combined texture samplers. The layout below assumes there is exactly one GLSL sampler
 				// for each HLSL texture declaration, but when combining textures+samplers, there can be multiple OGL samplers for each HLSL texture declaration.
@@ -1950,7 +2045,19 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 			{
 				case RESOURCE_DIMENSION_BUFFER:
 				{
-					bformata(glsl, "uniform %s ", GetSamplerType(psContext,
+					if ((psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) != 0)
+					{
+						const ResourceBinding *psBinding = NULL;
+						psShader->sInfo.GetResourceFromBindingPoint(RGROUP_TEXTURE, psDecl->asOperands[0].ui32RegisterNumber, &psBinding);
+						std::string tname = psBinding->name;
+						GLSLCrossDependencyData::VulkanResourceBinding binding = psContext->psDependencies->GetVulkanResourceBinding(tname);
+						bformata(glsl, "layout(set = %d, binding = %d) ", binding.first, binding.second);
+					}
+
+					bcatcstr(glsl, "uniform ");
+					if (IsESLanguage(psContext->psShader->eTargetLanguage))
+						bcatcstr(glsl, "highp ");
+					bformata(glsl, "%s ", GetSamplerType(psContext,
 						RESOURCE_DIMENSION_BUFFER,
 						psDecl->asOperands[0].ui32RegisterNumber));
 					TranslateOperand(&psDecl->asOperands[0], TO_FLAG_NONE);
@@ -2347,7 +2454,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
                         
 				}
 
-				if (HavePrecisionQualifers(psShader->eTargetLanguage))
+				if (HavePrecisionQualifiers(psContext))
 				{
 					switch (psSignature->eMinPrec) // TODO What if the inputs in the indexed range are of different precisions?
 					{
@@ -2560,7 +2667,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 			// non-float images need either 'i' or 'u' prefix.
 			char imageTypePrefix[2] = { 0, 0 };
 			uint32_t bindpoint = psDecl->asOperands[0].ui32RegisterNumber;
-			const bool isVulkan = (psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS);
+			const bool isVulkan = (psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) != 0;
 
 			if(psDecl->sUAV.ui32GloballyCoherentAccess & GLOBALLY_COHERENT_ACCESS)
 			{
@@ -2585,12 +2692,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 				if ((psDecl->sUAV.ui32AccessFlags & ACCESS_FLAG_WRITE) && IsESLanguage(psShader->eTargetLanguage))
 				{
 					// Need to require the extension
-					if (!psShader->m_TextureBufferExtensionDeclared)
-					{
-						bcatcstr(psContext->extensions, "#extension GL_EXT_texture_buffer : require\n");
-						psShader->m_TextureBufferExtensionDeclared = true;
-					}
-
+					psContext->RequireExtension("GL_EXT_texture_buffer");
 				}
 
 				if(isVulkan)
@@ -2642,6 +2744,9 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 			{
 			case RESOURCE_DIMENSION_BUFFER:
 			{
+				if(IsESLanguage(psShader->eTargetLanguage))
+					psContext->RequireExtension("GL_EXT_texture_buffer");
+
 				bformata(glsl, "uniform %simageBuffer ", imageTypePrefix);
 				break;
 			}
@@ -2701,7 +2806,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 		}
 		case OPCODE_DCL_UNORDERED_ACCESS_VIEW_STRUCTURED:
 		{
-			const bool isVulkan = (psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS);
+			const bool isVulkan = (psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) != 0;
 			if(psDecl->sUAV.bCounter)
 			{
 				if (isVulkan) 
@@ -2715,7 +2820,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 				{
 					bcatcstr(glsl, "layout (binding = 0) uniform ");
 
-					if (HavePrecisionQualifers(psShader->eTargetLanguage))
+					if (HavePrecisionQualifiers(psContext))
 						bcatcstr(glsl, "highp ");
 					bcatcstr(glsl, "atomic_uint ");
 					ResourceName(glsl, psContext, RGROUP_UAV, psDecl->asOperands[0].ui32RegisterNumber, 0);
@@ -2729,7 +2834,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 		}
 		case OPCODE_DCL_UNORDERED_ACCESS_VIEW_RAW:
 		{
-			const bool isVulkan = (psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS);
+			const bool isVulkan = (psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) != 0;
 			if(psDecl->sUAV.bCounter)
 			{
 				if (isVulkan)
@@ -2742,7 +2847,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 				else
 				{
 					bcatcstr(glsl, "layout (binding = 0) uniform ");
-					if (HavePrecisionQualifers(psShader->eTargetLanguage))
+					if (HavePrecisionQualifiers(psContext))
 						bcatcstr(glsl, "highp ");
 					bcatcstr(glsl, "atomic_uint ");
 					ResourceName(glsl, psContext, RGROUP_UAV, psDecl->asOperands[0].ui32RegisterNumber, 0);
@@ -2850,7 +2955,7 @@ bool ToGLSL::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::In
 	}
 
 	switch (sig->eSystemValueType)
-			{
+	{
 	case NAME_POSITION:
 		if (psContext->psShader->eShaderType == PIXEL_SHADER)
 			result = "gl_FragCoord";
@@ -2863,13 +2968,13 @@ bool ToGLSL::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::In
 			*pui32IgnoreSwizzle = 1;
 		return true;
 	case NAME_CLIP_DISTANCE:
-	{
+		{
 		// This is always routed through temp
 		std::ostringstream oss;
 		oss << "phase" << psContext->currentPhase << "_glClipDistance" << sig->ui32SemanticIndex;
 		result = oss.str();
 		return true;
-	}
+		}
 	case NAME_VIEWPORT_ARRAY_INDEX:
 		result = "gl_ViewportIndex";
 		if (pui32IgnoreSwizzle)
@@ -2918,7 +3023,7 @@ bool ToGLSL::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::In
 		{
 			result = "gl_TessLevelOuter";
 			return true;
-			}
+		}
 		else
 		{
 			result = "gl_TessLevelOuter[0]";
@@ -2951,9 +3056,9 @@ bool ToGLSL::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::In
 		{
 			result = "gl_TessLevelInner";
 			return true;
-	}
+		}
 		else
-	{
+		{
 			result = "gl_TessLevelInner[0]";
 			return true;
 		}
@@ -2967,12 +3072,12 @@ bool ToGLSL::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::In
 	}
 
 	if (psContext->psShader->asPhases[psContext->currentPhase].ePhase == HS_CTRL_POINT_PHASE)
-		{
+	{
 		if (sig->semanticName == "POS" && sig->ui32SemanticIndex == 0)
-			{
+		{
 			result = "gl_out[gl_InvocationID].gl_Position";
 			return true;
-			}
+		}
 		std::ostringstream oss;
 		if(isInput)
 			oss << psContext->inputPrefix << sig->semanticName << sig->ui32SemanticIndex;
@@ -2980,7 +3085,7 @@ bool ToGLSL::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::In
 			oss << psContext->outputPrefix << sig->semanticName << sig->ui32SemanticIndex << "[gl_InvocationID]";
 		result = oss.str();
 		return true;
-		}
+	}
 
 	// TODO: Add other builtins here.
 	if (sig->eSystemValueType == NAME_POSITION || (sig->semanticName == "POS" && sig->ui32SemanticIndex == 0 && psContext->psShader->eShaderType == VERTEX_SHADER))
@@ -2989,6 +3094,13 @@ bool ToGLSL::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::In
 		return true;
 	}
 
+	if (sig->semanticName == "PSIZE")
+	{
+		result = "gl_PointSize";
+		if (pui32IgnoreSwizzle)
+			*pui32IgnoreSwizzle = 1;
+		return true;
+	}
+
 	return false;
 }
-

@@ -861,6 +861,7 @@ void ShaderPhase::ExpandSWAPCs()
 		swapItr->eOpcode = OPCODE_MOVC;
 		swapItr->ui32NumOperands = 4;
 		swapItr->ui32FirstSrc = 1;
+		swapItr->asOperands[0] = origSwapInst.asOperands[0];
 		swapItr->asOperands[0].eType = OPERAND_TYPE_TEMP;
 		swapItr->asOperands[0].ui32RegisterNumber = extraTemp;
 		// mask is already fine
@@ -923,19 +924,18 @@ void Shader::ForcePositionToHighp()
 	{
 		if (decl.eOpcode == OPCODE_DCL_OUTPUT_SIV)
 		{
-			if (decl.asOperands[0].eSpecialName == NAME_POSITION)
-				return true;
-			if (decl.asOperands[0].eSpecialName != NAME_UNDEFINED)
-				return false;
-
-			// This might be SV_Position (because d3dcompiler is weird). Get signature and check
-			const ShaderInfo::InOutSignature *sig = NULL;
-			sInfo.GetOutputSignatureFromRegister(decl.asOperands[0].ui32RegisterNumber, decl.asOperands[0].GetAccessMask(), 0, &sig);
-			ASSERT(sig != NULL);
-			if ((sig->eSystemValueType == NAME_POSITION || sig->semanticName == "POS") && sig->ui32SemanticIndex == 0)
+			const SPECIAL_NAME specialName = decl.asOperands[0].eSpecialName;
+			if (specialName == NAME_POSITION ||
+				specialName == NAME_UNDEFINED) // This might be SV_Position (because d3dcompiler is weird).
 			{
-				((ShaderInfo::InOutSignature *)sig)->eMinPrec = MIN_PRECISION_DEFAULT;
-				return true;
+				const ShaderInfo::InOutSignature *sig = NULL;
+				sInfo.GetOutputSignatureFromRegister(decl.asOperands[0].ui32RegisterNumber, decl.asOperands[0].GetAccessMask(), 0, &sig);
+				ASSERT(sig != NULL);
+				if ((sig->eSystemValueType == NAME_POSITION || sig->semanticName == "POS") && sig->ui32SemanticIndex == 0)
+				{
+					((ShaderInfo::InOutSignature *)sig)->eMinPrec = MIN_PRECISION_DEFAULT;
+					return true;
+				}
 			}
 			return false;
 		}

@@ -178,7 +178,7 @@ static void MarkTextureSamplerPair(ShaderInfo* psShaderInfo, std::vector<Declara
 				//  set::insert returns a pair of which .second tells whether a new element was actually added
 				if (psDecl->samplersUsed.insert(psSamplerOperand->ui32RegisterNumber).second)
                 {
-                    // Record the texturename_X_samplername string in the TextureSamplerPair array that we return to the client
+                    // Record the <texturename>TEX_with_SMP<samplername> string in the TextureSamplerPair array that we return to the client
                     std::string combinedname = TextureSamplerName(psShaderInfo, psTextureOperand->ui32RegisterNumber, psSamplerOperand->ui32RegisterNumber, psDecl->ui32IsShadowTex);
 					samplers.push_back(combinedname);
                 }
@@ -1112,7 +1112,7 @@ const uint32_t* DecodeInstruction(const uint32_t* pui32Token, Instruction* psIns
 		{
             psInst->ui32NumOperands = 4;
 
-			if(eOpcode == OPCODE_IMUL)
+			if(eOpcode == OPCODE_IMUL || eOpcode == OPCODE_UDIV)
 			{
 				psInst->ui32FirstSrc = 2;
 			}
@@ -1244,6 +1244,16 @@ const uint32_t* DecodeInstruction(const uint32_t* pui32Token, Instruction* psIns
             ui32OperandOffset += DecodeOperand(pui32Token+ui32OperandOffset, &psInst->asOperands[2]);
             break;
         }
+		case OPCODE_SAMPLE_INFO:
+		{
+			psInst->ui32NumOperands = 2;
+
+			psInst->eResInfoReturnType = DecodeResInfoReturnType(pui32Token[0]);
+
+			ui32OperandOffset += DecodeOperand(pui32Token + ui32OperandOffset, &psInst->asOperands[0]);
+			ui32OperandOffset += DecodeOperand(pui32Token + ui32OperandOffset, &psInst->asOperands[1]);
+			break;
+		}
         case OPCODE_MSAD:
         default:
         {
@@ -1254,8 +1264,8 @@ const uint32_t* DecodeInstruction(const uint32_t* pui32Token, Instruction* psIns
 
     // For opcodes that sample textures, mark which samplers are used by each texture
     {
-        uint32_t ui32TextureRegisterNumber;
-        uint32_t ui32SamplerRegisterNumber;
+        uint32_t ui32TextureRegisterNumber = 0;
+        uint32_t ui32SamplerRegisterNumber = 0;
         uint32_t bTextureSampleInstruction = 0;
         switch (eOpcode)
         {

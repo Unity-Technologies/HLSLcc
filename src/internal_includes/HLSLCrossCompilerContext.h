@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <string>
+#include <set>
 #include "bstrlib.h"
 
 class Shader;
@@ -47,4 +48,8 @@ public:
 
 	bool OutputNeedsDeclaring(const Operand* psOperand, const int count);
 
+	void RequireExtension(const std::string &extName);
+
+private:
+	std::set<std::string> m_EnabledExtensions;
 };

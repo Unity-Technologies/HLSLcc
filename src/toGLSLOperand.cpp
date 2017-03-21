@@ -6,6 +6,7 @@
 #include "internal_includes/debug.h"
 #include "internal_includes/Shader.h"
 #include "internal_includes/toGLSL.h"
+#include "internal_includes/languages.h"
 #include <cmath>
 
 #include <sstream>
@@ -57,7 +58,11 @@ void TranslateOperandSwizzle(HLSLCrossCompilerContext* psContext, const Operand*
 
 void TranslateOperandSwizzleWithMask(HLSLCrossCompilerContext* psContext, const Operand* psOperand, uint32_t ui32ComponentMask, int iRebase)
 {
-	bstring glsl = *psContext->currentGLSLString;
+	TranslateOperandSwizzleWithMask(*psContext->currentGLSLString, psContext, psOperand, ui32ComponentMask, iRebase);
+}
+
+void TranslateOperandSwizzleWithMask(bstring glsl, HLSLCrossCompilerContext* psContext, const Operand* psOperand, uint32_t ui32ComponentMask, int iRebase)
+{
 	uint32_t accessMask = ui32ComponentMask & psOperand->GetAccessMask();
 	if(psOperand->eType == OPERAND_TYPE_INPUT)
 	{
@@ -401,10 +406,14 @@ static void printImmediate32(HLSLCrossCompilerContext *psContext, uint32_t value
 
 void ToGLSL::TranslateVariableNameWithMask(const Operand* psOperand, uint32_t ui32TOFlag, uint32_t* pui32IgnoreSwizzle, uint32_t ui32CompMask, int *piRebase)
 {
+	TranslateVariableNameWithMask(*psContext->currentGLSLString, psOperand, ui32TOFlag, pui32IgnoreSwizzle, ui32CompMask, piRebase);
+}
+
+void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperand, uint32_t ui32TOFlag, uint32_t* pui32IgnoreSwizzle, uint32_t ui32CompMask, int *piRebase)
+{
 	int numParenthesis = 0;
 	int hasCtor = 0;
 	int needsBoolUpscale = 0; // If nonzero, bools need * 0xffffffff in them
-	bstring glsl = *psContext->currentGLSLString;
 	SHADER_VARIABLE_TYPE requestedType = TypeFlagsToSVTType(ui32TOFlag);
 	SHADER_VARIABLE_TYPE eType = psOperand->GetDataType(psContext, requestedType);
 	int numComponents = psOperand->GetNumSwizzleElements(ui32CompMask);
@@ -606,7 +615,21 @@ void ToGLSL::TranslateVariableNameWithMask(const Operand* psOperand, uint32_t ui
 						else
 						{
 							std::string name = psContext->GetDeclaredInputName(psOperand, piRebase, 0, pui32IgnoreSwizzle);
-							bcatcstr(glsl, name.c_str());
+
+							// Rewrite the variable name if we're using framebuffer fetch
+							if (psContext->psShader->extensions->EXT_shader_framebuffer_fetch &&
+								psContext->psShader->eShaderType == PIXEL_SHADER &&
+								psContext->flags & HLSLCC_FLAG_SHADER_FRAMEBUFFER_FETCH)
+							{
+								if(name == "vs_SV_Target0")
+									bcatcstr(glsl, "SV_Target0");
+								else
+									bcatcstr(glsl, name.c_str());
+							}
+							else
+							{
+								bcatcstr(glsl, name.c_str());
+							}
 						}
 					}
 					break;
@@ -781,7 +804,7 @@ void ToGLSL::TranslateVariableNameWithMask(const Operand* psOperand, uint32_t ui
 			const ShaderVarType* psVarType = NULL;
 			int32_t index = -1;
 			std::vector<uint32_t> arrayIndices;
-			bool isArray;
+			bool isArray = false;
 			psContext->psShader->sInfo.GetConstantBufferFromBindingPoint(RGROUP_CBUFFER, psOperand->aui32ArraySizes[0], &psCBuf);
 
 			switch(psContext->psShader->eShaderType)
@@ -817,6 +840,14 @@ void ToGLSL::TranslateVariableNameWithMask(const Operand* psOperand, uint32_t ui
 				}
 			}
 
+			if(psCBuf && psCBuf->name == "OVR_multiview")
+			{
+				pui32IgnoreSwizzle[0] = 1;
+				bformata(glsl, "gl_ViewID_OVR");
+				break;
+			}
+			
+			
 			if(ui32TOFlag & TO_FLAG_DECLARATION_NAME)
 			{
 				pui32IgnoreSwizzle[0] = 1;
@@ -1411,7 +1442,11 @@ void ToGLSL::TranslateVariableNameWithMask(const Operand* psOperand, uint32_t ui
 
 void ToGLSL::TranslateOperand(const Operand* psOperand, uint32_t ui32TOFlag, uint32_t ui32ComponentMask)
 {
-	bstring glsl = *psContext->currentGLSLString;
+	TranslateOperand(*psContext->currentGLSLString, psOperand, ui32TOFlag, ui32ComponentMask);
+}
+
+void ToGLSL::TranslateOperand(bstring glsl, const Operand* psOperand, uint32_t ui32TOFlag, uint32_t ui32ComponentMask)
+{
 	uint32_t ui32IgnoreSwizzle = 0;
 	int iRebase = 0;
 
@@ -1426,7 +1461,7 @@ void ToGLSL::TranslateOperand(const Operand* psOperand, uint32_t ui32TOFlag, uin
 
 	if(ui32TOFlag & TO_FLAG_NAME_ONLY)
 	{
-		TranslateVariableNameWithMask(psOperand, ui32TOFlag, &ui32IgnoreSwizzle, OPERAND_4_COMPONENT_MASK_ALL, &iRebase);
+		TranslateVariableNameWithMask(glsl, psOperand, ui32TOFlag, &ui32IgnoreSwizzle, OPERAND_4_COMPONENT_MASK_ALL, &iRebase);
 		return;
 	}
 
@@ -1453,7 +1488,7 @@ void ToGLSL::TranslateOperand(const Operand* psOperand, uint32_t ui32TOFlag, uin
 		}
 	}
 
-	TranslateVariableNameWithMask(psOperand, ui32TOFlag, &ui32IgnoreSwizzle, ui32ComponentMask, &iRebase);
+	TranslateVariableNameWithMask(glsl, psOperand, ui32TOFlag, &ui32IgnoreSwizzle, ui32ComponentMask, &iRebase);
 
 	if(psContext->psShader->eShaderType == HULL_SHADER && psOperand->eType == OPERAND_TYPE_OUTPUT &&
 		psOperand->ui32RegisterNumber != 0 && psOperand->iArrayElements != 0 && psOperand->eIndexRep[0] != OPERAND_INDEX_IMMEDIATE32_PLUS_RELATIVE
@@ -1464,7 +1499,7 @@ void ToGLSL::TranslateOperand(const Operand* psOperand, uint32_t ui32TOFlag, uin
 
 	if(!ui32IgnoreSwizzle)
 	{
-		TranslateOperandSwizzleWithMask(psContext, psOperand, ui32ComponentMask, iRebase);
+		TranslateOperandSwizzleWithMask(glsl, psContext, psOperand, ui32ComponentMask, iRebase);
 	}
 
 	switch(psOperand->eModifier)
@@ -1592,18 +1627,11 @@ std::string TextureSamplerName(ShaderInfo* psShaderInfo, const uint32_t ui32Text
 
 	if(ui32ArrayOffset)
 	{
-		oss << texName << ui32ArrayOffset << "_X_" << psSamplerBinding->name;
+		oss << texName << ui32ArrayOffset << "TEX_with_SMP" << psSamplerBinding->name;
 	}
 	else
 	{
-		if((i>0) && (texName[i-1] == '_'))//Prevent double underscore which is reserved
-		{
-			oss << texName << "X_" << psSamplerBinding->name;
-		}
-		else
-		{
-			oss << texName << "_X_" << psSamplerBinding->name;
-		}
+		oss << texName << "TEX_with_SMP" << psSamplerBinding->name;
 	}
 
 	return oss.str();

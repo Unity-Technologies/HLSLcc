@@ -3,6 +3,7 @@
 #include "bstrlib.h"
 #include <vector>
 #include <string>
+#include <algorithm>
 
 #include "internal_includes/Instruction.h"
 #include "internal_includes/Operand.h"
