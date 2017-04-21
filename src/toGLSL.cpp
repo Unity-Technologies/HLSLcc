@@ -278,6 +278,9 @@ static void AddVersionDependentCode(HLSLCrossCompilerContext* psContext)
 		bcatcstr(glsl, "precision highp int;\n");
 	}
 
+	if (psContext->flags & HLSLCC_FLAG_UBO_MEMBER_OFFSETS)
+		bcatcstr(extensions,"#extension GL_ARB_enhanced_layouts : require\n");
+
 	if(psContext->psShader->eShaderType == PIXEL_SHADER && psContext->psShader->eTargetLanguage >= LANG_150)
 	{
 		if(psContext->flags & HLSLCC_FLAG_ORIGIN_UPPER_LEFT)

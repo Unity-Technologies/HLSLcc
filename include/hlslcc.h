@@ -453,6 +453,10 @@ static const unsigned int HLSLCC_FLAG_VULKAN_SPECIALIZATION_CONSTANTS = 0x200000
 // If set, this shader uses the GLSL extension EXT_shader_framebuffer_fetch
 static const unsigned int HLSLCC_FLAG_SHADER_FRAMEBUFFER_FETCH = 0x400000;
 
+// If set, UBO members get explicit offset locations to match HLSL offsets.
+// Requires ARB_enhanced_layouts
+static const unsigned int HLSLCC_FLAG_UBO_MEMBER_OFFSETS = 0x800000;
+
 
 #ifdef __cplusplus
 extern "C" {
