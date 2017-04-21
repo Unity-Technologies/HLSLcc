@@ -869,6 +869,9 @@ static void DeclareUBOConstants(HLSLCrossCompilerContext* psContext, const uint3
 	{
 		if(skipUnused && !psCBuf->asVars[i].sType.m_IsUsed)
 			continue;
+
+		if (psContext->flags & HLSLCC_FLAG_UBO_MEMBER_OFFSETS)
+			bformata(glsl, "\tlayout(offset=%d) ", psCBuf->asVars[i].ui32StartOffset);
 		
 		DeclareConstBufferShaderVariable(psContext,
 			psCBuf->asVars[i].name.c_str(),
