@@ -1729,10 +1729,16 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 					AddBuiltinInput(psContext, psDecl, "gl_FragCoord");
 					break;
 				}
-                default:
-                    ASSERT(0);
-                    break;
-                    
+				case NAME_RENDER_TARGET_ARRAY_INDEX:
+				{
+					AddBuiltinInput(psContext, psDecl, "gl_Layer");
+					break;
+				}
+				default:
+				{
+					ASSERT(0);
+					break;
+				}
 			}
 			break;
 		}
