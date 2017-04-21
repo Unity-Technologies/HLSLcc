@@ -389,11 +389,19 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
 		{
 			if (CanDoDirectCast(eType, requestedType))
 			{
-				oss << GetConstructorForType(psContext, requestedType, requestedComponents, false) << "(";
-				numParenthesis++;
 				hasCtor = 1;
 				if (eType == SVT_BOOL)
+				{
 					needsBoolUpscale = 1;
+
+					// make sure to wrap the whole thing in parens so the upscale
+					// multiply only applies to the bool
+					oss << "(";
+					numParenthesis++;
+				}
+
+				oss << GetConstructorForType(psContext, requestedType, requestedComponents, false) << "(";
+				numParenthesis++;
 			}
 			else
 			{
@@ -1048,6 +1056,9 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
 			oss << ") * 0xffffffffu";
 		else
 			oss << ") * int(0xffffffffu)";
+		numParenthesis--;
+
+		oss << ")";
 		numParenthesis--;
 	}
 

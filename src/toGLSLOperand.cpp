@@ -487,11 +487,19 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
 		{
 			if (CanDoDirectCast(eType, requestedType))
 			{
-				bformata(glsl, "%s(", GetConstructorForType(psContext, requestedType, requestedComponents, false));
-				numParenthesis++;
 				hasCtor = 1;
 				if (eType == SVT_BOOL)
+				{
 					needsBoolUpscale = 1;
+
+					// make sure to wrap the whole thing in parens so the upscale
+					// multiply only applies to the bool
+					bcatcstr(glsl, "(");
+					numParenthesis++;
+				}
+
+				bformata(glsl, "%s(", GetConstructorForType(psContext, requestedType, requestedComponents, false));
+				numParenthesis++;
 			}
 			else
 			{
@@ -1431,6 +1439,9 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
 			bcatcstr(glsl, ") * 0xffffffffu");
 		else
 			bcatcstr(glsl, ") * int(0xffffffffu)");
+		numParenthesis--;
+
+		bcatcstr(glsl, ")");
 		numParenthesis--;
 	}
 
