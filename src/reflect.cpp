@@ -193,7 +193,7 @@ static void ReadPatchConstantSignatures(const uint32_t* pui32Tokens,
     }
 }
 
-static const uint32_t* ReadResourceBinding(const uint32_t* pui32FirstResourceToken, const uint32_t* pui32Tokens, ResourceBinding* psBinding, uint32_t decodeFlags)
+static const uint32_t* ReadResourceBinding(ShaderInfo* psShaderInfo, const uint32_t* pui32FirstResourceToken, const uint32_t* pui32Tokens, ResourceBinding* psBinding, uint32_t decodeFlags)
 {
     uint32_t ui32NameOffset = *pui32Tokens++;
 
@@ -207,6 +207,14 @@ static const uint32_t* ReadResourceBinding(const uint32_t* pui32FirstResourceTok
     psBinding->ui32BindPoint = *pui32Tokens++;
     psBinding->ui32BindCount = *pui32Tokens++;
     psBinding->ui32Flags = *pui32Tokens++;
+    if (((psShaderInfo->ui32MajorVersion >= 5) && (psShaderInfo->ui32MinorVersion >= 1)) ||
+        (psShaderInfo->ui32MajorVersion > 5)) 
+    {
+        // SM51 has spaces
+        psBinding->ui32Space = *pui32Tokens++;
+        // Unsure what this field is
+        pui32Tokens++;
+    }
 	psBinding->ePrecision = REFLECT_RESOURCE_PRECISION_UNKNOWN;
 
 	if (decodeFlags & HLSLCC_FLAG_SAMPLER_PRECISION_ENCODED_IN_NAME)
@@ -408,7 +416,7 @@ static void ReadResources(const uint32_t* pui32Tokens,//in
 
     for(i=0; i < ui32NumResourceBindings; ++i)
     {
-        pui32ResourceBindings = ReadResourceBinding(pui32FirstToken, pui32ResourceBindings, psResBindings+i, decodeFlags);
+        pui32ResourceBindings = ReadResourceBinding(psShaderInfo, pui32FirstToken, pui32ResourceBindings, psResBindings+i, decodeFlags);
 		ASSERT(psResBindings[i].ui32BindPoint < MAX_RESOURCE_BINDINGS);
 	}
 
