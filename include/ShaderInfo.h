@@ -227,6 +227,7 @@ struct ResourceBinding
 	ResourceType eType;
 	uint32_t ui32BindPoint;
 	uint32_t ui32BindCount;
+	uint32_t ui32Space;
 	uint32_t ui32Flags;
 	REFLECT_RESOURCE_DIMENSION eDimension;
 	RESOURCE_RETURN_TYPE ui32ReturnType;
