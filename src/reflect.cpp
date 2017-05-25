@@ -203,17 +203,15 @@ static const uint32_t* ReadResourceBinding(ShaderInfo* psShaderInfo, const uint3
     psBinding->eType = (ResourceType)*pui32Tokens++;
     psBinding->ui32ReturnType = (RESOURCE_RETURN_TYPE)*pui32Tokens++;
     psBinding->eDimension = (REFLECT_RESOURCE_DIMENSION)*pui32Tokens++;
-    psBinding->ui32NumSamples = *pui32Tokens++;
+    psBinding->ui32NumSamples = *pui32Tokens++; // fxc generates 2^32 - 1 for non MS images
     psBinding->ui32BindPoint = *pui32Tokens++;
     psBinding->ui32BindCount = *pui32Tokens++;
     psBinding->ui32Flags = *pui32Tokens++;
     if (((psShaderInfo->ui32MajorVersion >= 5) && (psShaderInfo->ui32MinorVersion >= 1)) ||
         (psShaderInfo->ui32MajorVersion > 5)) 
     {
-        // SM51 has spaces
         psBinding->ui32Space = *pui32Tokens++;
-        // Unsure what this field is
-        pui32Tokens++;
+        psBinding->ui32RangeID = *pui32Tokens++;
     }
 	psBinding->ePrecision = REFLECT_RESOURCE_PRECISION_UNKNOWN;
 
