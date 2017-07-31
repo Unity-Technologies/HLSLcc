@@ -150,29 +150,37 @@ int ShaderInfo::GetOutputSignatureFromSystemValue(SPECIAL_NAME eSystemValueType,
 	return 0;
 }
 
-static uint32_t GetCBVarSize(const ShaderVarType* psType, bool matrixAsVectors)
+uint32_t ShaderInfo::GetCBVarSize(const ShaderVarType* psType, bool matrixAsVectors, bool wholeArraySize)
 {
-	// Struct size is calculated from the offset and size of its last member
+    // Default is regular matrices, vectors and scalars 
+    uint32_t size = psType->Columns * psType->Rows * 4;
+
+	// Struct size is calculated from the offset and size of its last member.
+    // Need to take into account that members could be arrays.
 	if (psType->Class == SVC_STRUCT)
 	{
-		return psType->Members.back().Offset + GetCBVarSize(&psType->Members.back(), matrixAsVectors);
+        size = psType->Members.back().Offset + GetCBVarSize(&psType->Members.back(), matrixAsVectors, true);
 	}
-
 	// Matrices represented as vec4 arrays have special size calculation 
-	if (matrixAsVectors)
+	else if (matrixAsVectors)
 	{
 		if (psType->Class == SVC_MATRIX_ROWS)
 		{
-			return psType->Rows * 16;
+            size = psType->Rows * 16;
 		}
 		else if (psType->Class == SVC_MATRIX_COLUMNS)
 		{
-			return psType->Columns * 16;
+			size = psType->Columns * 16;
 		}
 	}
 
-	// Regular matrices, vectors and scalars 
-	return psType->Columns * psType->Rows * 4;
+    if (wholeArraySize && psType->Elements > 1)
+    { 
+        uint32_t paddedSize = ((size + 15) / 16) * 16; // Arrays are padded to float4 size
+        size = (psType->Elements - 1) * paddedSize + size; // Except the last element
+    }
+
+    return size;
 }
 
 static const ShaderVarType* IsOffsetInType(const ShaderVarType* psType,
@@ -184,10 +192,8 @@ static const ShaderVarType* IsOffsetInType(const ShaderVarType* psType,
 	uint32_t flags)
 {
 	uint32_t thisOffset = parentOffset + psType->Offset;
-	uint32_t thisSize = GetCBVarSize(psType, (flags & HLSLCC_FLAG_TRANSLATE_MATRICES) != 0);
-	uint32_t paddedSize = thisSize;
-	if (thisSize % 16 > 0) 
-		paddedSize += (16 - (thisSize % 16));
+	uint32_t thisSize = ShaderInfo::GetCBVarSize(psType, (flags & HLSLCC_FLAG_TRANSLATE_MATRICES) != 0);
+	uint32_t paddedSize = ((thisSize + 15) / 16) * 16;
 	uint32_t arraySize = thisSize;
 
 	// Array elements are padded to align on vec4 size, except for the last one
@@ -308,7 +314,7 @@ int ShaderInfo::GetShaderVarFromOffset(const uint32_t ui32Vec4Offset,
 
 // Patches the fullName of the var with given array indices. Does not insert the indexing for the var itself if it is an array.
 // Searches for brackets and inserts indices one by one.
-std::string ShaderInfo::GetShaderVarIndexedFullName(const ShaderVarType* psShaderVar, std::vector<uint32_t> &indices)
+std::string ShaderInfo::GetShaderVarIndexedFullName(const ShaderVarType* psShaderVar, std::vector<uint32_t> &indices, const std::string dynamicIndex, bool revertDynamicIndexCalc, bool matrixAsVectors)
 {
 	std::ostringstream oss;
 	size_t prevpos = 0;
@@ -318,8 +324,29 @@ std::string ShaderInfo::GetShaderVarIndexedFullName(const ShaderVarType* psShade
 	{
 		pos++;
 		oss << psShaderVar->fullName.substr(prevpos, pos - prevpos);
-		if (i < indices.size())
+
+        // Add possibly given dynamic index for the root array.
+        if (i == 0 && !dynamicIndex.empty())
+        {
+            oss << dynamicIndex;
+
+            // if we couldn't use original index temp, revert the float4 address calc here
+            if (revertDynamicIndexCalc)
+            {
+                const ShaderVarType* psRootVar = psShaderVar;
+                while (psRootVar->Parent != NULL)
+                    psRootVar = psRootVar->Parent;
+
+                uint32_t thisSize = (GetCBVarSize(psRootVar, matrixAsVectors) + 15) / 16; // size in float4
+                oss << " / " << thisSize;
+            }
+
+            if (!indices.empty() && indices[i] != 0)
+                oss << " + " << indices[i];
+        }
+		else if (i < indices.size())
 			oss << indices[i];
+
 		prevpos = pos;
 		i++;
 		pos = psShaderVar->fullName.find('[', prevpos);

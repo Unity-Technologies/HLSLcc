@@ -315,13 +315,6 @@ void HLSLcc::DataTypeAnalysis::SetDataTypes(HLSLCrossCompilerContext* psContext,
 				MarkOperandAs(&psInst->asOperands[2], SVT_INT_AMBIGUOUS, aeTempVecType);
 				break;
 
-			case OPCODE_AND:
-				MarkOperandAs(&psInst->asOperands[0], SVT_INT_AMBIGUOUS, aeTempVecType);
-				MarkOperandAs(&psInst->asOperands[1], SVT_BOOL, aeTempVecType);
-				MarkOperandAs(&psInst->asOperands[2], SVT_BOOL, aeTempVecType);
-				break;
-
-
 			case OPCODE_IF:
 			case OPCODE_BREAKC:
 			case OPCODE_CALLC:
@@ -344,12 +337,18 @@ void HLSLcc::DataTypeAnalysis::SetDataTypes(HLSLCrossCompilerContext* psContext,
 				MarkOperandAs(&psInst->asOperands[2], SVT_UINT, aeTempVecType);
 				break;
 
+			case OPCODE_AND:
+			case OPCODE_OR:
+				MarkOperandAs(&psInst->asOperands[0], SVT_INT_AMBIGUOUS, aeTempVecType);
+				MarkOperandAs(&psInst->asOperands[1], SVT_BOOL, aeTempVecType);
+				MarkOperandAs(&psInst->asOperands[2], SVT_BOOL, aeTempVecType);
+				break;
+
 				// Integer ops that don't care of signedness
 			case OPCODE_IADD:
 			case OPCODE_INEG:
 			case OPCODE_ISHL:
 			case OPCODE_NOT:
-			case OPCODE_OR:
 			case OPCODE_XOR:
 			case OPCODE_BUFINFO:
 			case OPCODE_COUNTBITS:
@@ -673,7 +672,9 @@ void HLSLcc::DataTypeAnalysis::SetDataTypes(HLSLCrossCompilerContext* psContext,
 						}
 					}
 
-					if (foundImmediate && dataType == SVT_VOID)
+					// Use at minimum int type when any operand is immediate.
+					// Allowing bool could lead into bugs like case 883080
+					if (foundImmediate && (dataType == SVT_VOID || dataType == SVT_BOOL))
 						dataType = SVT_INT;
 
 					if (dataType != SVT_VOID)

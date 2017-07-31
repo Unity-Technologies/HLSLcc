@@ -444,8 +444,8 @@ static const unsigned int HLSLCC_FLAG_VULKAN_BINDINGS = 0x40000;
 // If set, metal output will use linear sampler for shadow compares, otherwise point sampler.
 static const unsigned int HLSLCC_FLAG_METAL_SHADOW_SAMPLER_LINEAR = 0x80000;
 
-// If set, emits for NVN, the Nvidia-provided graphics API for Nintendo Switch.
-static const unsigned int HLSLCC_FLAG_NVN_TARGET = 0x100000; 
+// If set, avoid emit atomic counter (ARB_shader_atomic_counters) and use atomic functions provided by ARB_shader_storage_buffer_object instead.
+static const unsigned int HLSLCC_FLAG_AVOID_SHADER_ATOMIC_COUNTERS = 0x100000; 
 
 // If set, and generating Vulkan shaders, attempts to detect static branching and transforms them into specialization constants
 static const unsigned int HLSLCC_FLAG_VULKAN_SPECIALIZATION_CONSTANTS = 0x200000;
@@ -453,6 +453,12 @@ static const unsigned int HLSLCC_FLAG_VULKAN_SPECIALIZATION_CONSTANTS = 0x200000
 // If set, this shader uses the GLSL extension EXT_shader_framebuffer_fetch
 static const unsigned int HLSLCC_FLAG_SHADER_FRAMEBUFFER_FETCH = 0x400000;
 
+// Build for Switch.
+static const unsigned int HLSLCC_FLAG_NVN_TARGET = 0x800000;
+
+// If set, generate an instance name for constant buffers. GLSL specs 4.5 disallows uniform variables from different constant buffers sharing the same name
+// as long as they are part of the same final linked program. Uniform buffer instance names solve this cross-shader symbol conflict issue.
+static const unsigned int HLSLCC_FLAG_UNIFORM_BUFFER_OBJECT_WITH_INSTANCE_NAME = 0x1000000;
 
 #ifdef __cplusplus
 extern "C" {

@@ -92,6 +92,11 @@ public:
 	// Same as above but with explicit shader type and phase
 	int GetRegisterSpace(SHADER_TYPE eShaderType, SHADER_PHASE_TYPE eShaderPhaseType) const;
 
+    // Find the operand that contains the dynamic index for this operand (array in constant buffer).
+    // When isAoS is true, we'll try to find the original index var to avoid additional calculations.
+    // needsIndexCalcRevert output will tell if we need to divide the value to get the correct index.
+    Operand* GetDynamicIndexOperand(HLSLCrossCompilerContext *psContext, const ShaderVarType* psVar, bool isAoS, bool *needsIndexCalcRevert) const;
+
 	// Maps REFLECT_RESOURCE_PRECISION into OPERAND_MIN_PRECISION as much as possible
 	static OPERAND_MIN_PRECISION ResourcePrecisionToOperandPrecision(REFLECT_RESOURCE_PRECISION ePrec);
 

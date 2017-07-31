@@ -14,18 +14,22 @@
 using namespace HLSLcc;
 
 #ifdef _MSC_VER
-
 #if _MSC_VER < 1900
 #define snprintf _snprintf
 #endif
+#endif
 
+#ifndef fpcheck
+#ifdef _MSC_VER
 #define fpcheck(x) (_isnan(x) || !_finite(x))
 #else
 #define fpcheck(x) (std::isnan(x) || std::isinf(x))
 #endif
+#endif // #ifndef fpcheck
+
 
 // Returns nonzero if types are just different precisions of the same underlying type
-static bool AreTypesCompatible(SHADER_VARIABLE_TYPE a, uint32_t ui32TOFlag)
+static bool AreTypesCompatibleMetal(SHADER_VARIABLE_TYPE a, uint32_t ui32TOFlag)
 {
 	SHADER_VARIABLE_TYPE b = TypeFlagsToSVTType(ui32TOFlag);
 
@@ -352,8 +356,19 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
 	if (psOperand->eType == OPERAND_TYPE_INPUT)
 	{
 		// Check for scalar
-		if (psContext->psShader->abScalarInput[psOperand->GetRegisterSpace(psContext)][psOperand->ui32RegisterNumber] & psOperand->GetAccessMask()
-			&& psOperand->eSelMode == OPERAND_4_COMPONENT_SWIZZLE_MODE)
+		// You would think checking would be easy but there is a caveat:
+		//   checking abScalarInput might report as scalar, while in reality that was redirected and now is vector so swizzle must be preserved
+		//   as an example consider we have input:
+		//     float2 x; float y;
+		//   and later on we do
+		//     tex2D(xxx, fixed2(x.x, y));
+		//   in that case we will generate redirect but which ui32RegisterNumber will be used for it is not strictly "specified"
+		//   so we may end up with treating it as scalar (even though it is vector now)
+		const int redirectInput = psContext->psShader->asPhases[psContext->currentPhase].acInputNeedsRedirect[psOperand->ui32RegisterNumber];
+		const bool wasRedirected = redirectInput == 0xFF || redirectInput == 0xFE;
+
+		const int scalarInput = psContext->psShader->abScalarInput[psOperand->GetRegisterSpace(psContext)][psOperand->ui32RegisterNumber];
+		if (!wasRedirected && (scalarInput & psOperand->GetAccessMask()) && (psOperand->eSelMode == OPERAND_4_COMPONENT_SWIZZLE_MODE))
 		{
 			scalarWithSwizzle = 1;
 			*pui32IgnoreSwizzle = 1;
@@ -384,7 +399,7 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
 		}
 
 		bool bitcast = false;
-		if (AreTypesCompatible(eType, ui32TOFlag) == 0)
+		if (AreTypesCompatibleMetal(eType, ui32TOFlag) == 0)
 		{
 			if (CanDoDirectCast(eType, requestedType))
 			{
@@ -406,7 +421,15 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
 
 		// Add ctor if needed (upscaling). Type conversion is already handled above, so here we must
 		// use the original type to not make type conflicts in bitcasts
-		if (((numComponents < requestedComponents)||(scalarWithSwizzle != 0)) && (hasCtor == 0 || bitcast))
+		bool needsUpscaling = ((numComponents < requestedComponents)||(scalarWithSwizzle != 0)) && (hasCtor == 0 || bitcast);
+
+		// Add constuctor if half precision is forced to avoid template ambiguity error from compiler
+		bool needsForcedCtor = (ui32TOFlag & TO_FLAG_FORCE_HALF) && (psOperand->eType == OPERAND_TYPE_IMMEDIATE32 || psOperand->eType == OPERAND_TYPE_IMMEDIATE64);
+
+		if (needsForcedCtor)
+			requestedComponents = std::max(requestedComponents, 1);
+
+		if (needsUpscaling || needsForcedCtor)
 		{
 			oss << GetConstructorForType(psContext, eType, requestedComponents, false) << "(";
 
@@ -660,161 +683,143 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
 				//Work out the variable name. Don't apply swizzle to that variable yet.
 				int32_t rebase = 0;
 
-				if(psCBuf)
-				{
-					uint32_t componentsNeeded = 1;
-					if (psOperand->eSelMode != OPERAND_4_COMPONENT_SELECT_1_MODE)
-					{
-						uint32_t minSwiz = 3;
-						uint32_t maxSwiz = 0;
-						int i;
-						for (i = 0; i < 4; i++)
-						{
-							if ((ui32CompMask & (1 << i)) == 0)
-								continue;
-							minSwiz = std::min(minSwiz, psOperand->aui32Swizzle[i]);
-							maxSwiz = std::max(maxSwiz, psOperand->aui32Swizzle[i]);
-						}
-						componentsNeeded = maxSwiz - minSwiz + 1;
-					}
+				ASSERT(psCBuf != NULL);
 
-					ShaderInfo::GetShaderVarFromOffset(psOperand->aui32ArraySizes[1], psOperand->aui32Swizzle, psCBuf, &psVarType, &isArray, &arrayIndices, &rebase, psContext->flags);
-					if (psOperand->eSelMode == OPERAND_4_COMPONENT_SELECT_1_MODE || (componentsNeeded <= psVarType->Columns))
+				uint32_t componentsNeeded = 1;
+				if (psOperand->eSelMode != OPERAND_4_COMPONENT_SELECT_1_MODE)
+				{
+					uint32_t minSwiz = 3;
+					uint32_t maxSwiz = 0;
+					int i;
+					for (i = 0; i < 4; i++)
 					{
-						// Simple case: just access one component
-						std::string fullName = ShaderInfo::GetShaderVarIndexedFullName(psVarType, arrayIndices);
+						if ((ui32CompMask & (1 << i)) == 0)
+							continue;
+						minSwiz = std::min(minSwiz, psOperand->aui32Swizzle[i]);
+						maxSwiz = std::max(maxSwiz, psOperand->aui32Swizzle[i]);
+					}
+					componentsNeeded = maxSwiz - minSwiz + 1;
+				}
+
+				ShaderInfo::GetShaderVarFromOffset(psOperand->aui32ArraySizes[1], psOperand->aui32Swizzle, psCBuf, &psVarType, &isArray, &arrayIndices, &rebase, psContext->flags);
+
+                // Get a possible dynamic array index
+                std::ostringstream dynIndexOss;
+                bool needsIndexCalcRevert = false;
+                bool isAoS = ((!isArray && arrayIndices.size() > 0) || (isArray && arrayIndices.size() > 1));
+
+                Operand *psDynIndexOp = psOperand->GetDynamicIndexOperand(psContext, psVarType, isAoS, &needsIndexCalcRevert);
+
+                if (psDynIndexOp != NULL)
+                {
+                    SHADER_VARIABLE_TYPE eType = psDynIndexOp->GetDataType(psContext);
+                    uint32_t opFlags = TO_FLAG_INTEGER;
+
+                    if (eType != SVT_INT && eType != SVT_UINT)
+                        opFlags = TO_AUTO_BITCAST_TO_INT;
+
+                    dynIndexOss << TranslateOperand(psDynIndexOp, opFlags);
+                }
+
+                std::string dynamicIndexStr = dynIndexOss.str();
+
+				if (psOperand->eSelMode == OPERAND_4_COMPONENT_SELECT_1_MODE || (componentsNeeded <= psVarType->Columns))
+				{
+					// Simple case: just access one component
+					std::string fullName = ShaderInfo::GetShaderVarIndexedFullName(psVarType, arrayIndices, dynamicIndexStr, needsIndexCalcRevert, psContext->flags & HLSLCC_FLAG_TRANSLATE_MATRICES);
 						
-						if (((psContext->flags & HLSLCC_FLAG_TRANSLATE_MATRICES) != 0) && ((psVarType->Class == SVC_MATRIX_ROWS) || (psVarType->Class == SVC_MATRIX_COLUMNS)))
-						{
-							// We'll need to add the prefix only to the last section of the name
-							size_t commaPos = fullName.find_last_of('.');
-							char prefix[256];
-							sprintf(prefix, HLSLCC_TRANSLATE_MATRIX_FORMAT_STRING, psVarType->Rows, psVarType->Columns);
-							if (commaPos == std::string::npos)
-								fullName.insert(0, prefix);
-							else
-								fullName.insert(commaPos + 1, prefix);
-						}
-
-						oss << cbName << fullName;
-					}
-					else
+					if (((psContext->flags & HLSLCC_FLAG_TRANSLATE_MATRICES) != 0) && ((psVarType->Class == SVC_MATRIX_ROWS) || (psVarType->Class == SVC_MATRIX_COLUMNS)))
 					{
-						// Non-simple case: build vec4 and apply mask
-						uint32_t i;
-						int32_t tmpRebase;
-						std::vector<uint32_t> tmpArrayIndices;
-						bool tmpIsArray;
-						int firstItemAdded = 0;
-
-						oss << GetConstructorForTypeMetal(psVarType->Type, GetNumberBitsSet(ui32CompMask)) << "(";
-						for (i = 0; i < 4; i++)
-						{
-							const ShaderVarType *tmpVarType = NULL;
-							if ((ui32CompMask & (1 << i)) == 0)
-								continue;
-							tmpRebase = 0;
-							if (firstItemAdded != 0)
-								oss << ", ";
-							else
-								firstItemAdded = 1;
-
-							uint32_t tmpSwizzle[4] = { 0 };
-							std::copy(&psOperand->aui32Swizzle[i], &psOperand->aui32Swizzle[4], &tmpSwizzle[0]);
-
-							ShaderInfo::GetShaderVarFromOffset(psOperand->aui32ArraySizes[1], tmpSwizzle, psCBuf, &tmpVarType, &tmpIsArray, &tmpArrayIndices, &tmpRebase, psContext->flags);
-							std::string fullName = ShaderInfo::GetShaderVarIndexedFullName(tmpVarType, tmpArrayIndices);
-							
-							if (tmpVarType->Class == SVC_SCALAR)
-							{
-								oss << cbName << fullName;
-							}
-							else
-							{
-								uint32_t swizzle;
-								tmpRebase /= 4; // 0 => 0, 4 => 1, 8 => 2, 12 /= 3
-								swizzle = psOperand->aui32Swizzle[i] - tmpRebase;
-
-								oss << cbName << fullName << "." << ("xyzw"[swizzle]);
-							}
-						}
-						oss << ")";
-						// Clear rebase, we've already done it.
-						rebase = 0;
-						// Also swizzle.
-						*pui32IgnoreSwizzle = 1;
+						// We'll need to add the prefix only to the last section of the name
+						size_t commaPos = fullName.find_last_of('.');
+						char prefix[256];
+						sprintf(prefix, HLSLCC_TRANSLATE_MATRIX_FORMAT_STRING, psVarType->Rows, psVarType->Columns);
+						if (commaPos == std::string::npos)
+							fullName.insert(0, prefix);
+						else
+							fullName.insert(commaPos + 1, prefix);
 					}
-				}
-				else // We don't have a semantic for this variable, so try the raw dump appoach.
-				{
-					ASSERT(0); // We're screwed.
-//					bformata(glsl, "cb%d.data", psOperand->aui32ArraySizes[0]);//
-//					index = psOperand->aui32ArraySizes[1];
-				}
 
-				if (isArray)
-					index = arrayIndices.back();
-
-				//Dx9 only?
-				if (psOperand->m_SubOperands[0].get() != NULL)
-				{
-					// Array of matrices is treated as array of vec4s in HLSL,
-					// but that would mess up uniform types in GLSL. Do gymnastics.
-					uint32_t opFlags = TO_FLAG_INTEGER;
-
-					if ((psVarType->Class == SVC_MATRIX_COLUMNS || psVarType->Class == SVC_MATRIX_ROWS) && (psVarType->Elements > 1) && ((psContext->flags & HLSLCC_FLAG_TRANSLATE_MATRICES) == 0))
-					{
-						// Special handling for matrix arrays
-						oss << "[(" << TranslateOperand(psOperand->m_SubOperands[0].get(), opFlags) << ") / 4]";
-						oss << "[((" << TranslateOperand(psOperand->m_SubOperands[0].get(), opFlags, OPERAND_4_COMPONENT_MASK_X) << ") % 4)]";
-					}
-					else
-					{
-						oss << "[" << TranslateOperand(psOperand->m_SubOperands[0].get(), opFlags) << "]";
-					}
+					oss << cbName << fullName;
 				}
 				else
-					if (index != -1 && psOperand->m_SubOperands[1].get() != NULL)
-					{
-						// Array of matrices is treated as array of vec4s in HLSL,
-						// but that would mess up uniform types in GLSL. Do gymnastics.
-						SHADER_VARIABLE_TYPE eType = psOperand->m_SubOperands[1].get()->GetDataType(psContext);
-						uint32_t opFlags = TO_FLAG_INTEGER;
-						if (eType != SVT_INT && eType != SVT_UINT)
-							opFlags = TO_AUTO_BITCAST_TO_INT;
-
-						if ((psVarType->Class == SVC_MATRIX_COLUMNS || psVarType->Class == SVC_MATRIX_ROWS) && (psVarType->Elements > 1) && ((psContext->flags & HLSLCC_FLAG_TRANSLATE_MATRICES) == 0))
-						{
-							// Special handling for matrix arrays
-							oss << "[(" << TranslateOperand(psOperand->m_SubOperands[1].get(), opFlags) << " + " << index <<") / 4]";
-							oss << "[((" << TranslateOperand(psOperand->m_SubOperands[1].get(), opFlags, OPERAND_4_COMPONENT_MASK_X) << " + " << index << ") % 4)]";
-						}
-						else
-						{
-							if (index != 0)
-								oss << "[" << TranslateOperand(psOperand->m_SubOperands[1].get(), opFlags) << " + " << index << "]";
-							else
-								oss << "[" << TranslateOperand(psOperand->m_SubOperands[1].get(), opFlags) << "]";
-						}
-					}
-					else if (index != -1)
-					{
-						if ((psVarType->Class == SVC_MATRIX_COLUMNS || psVarType->Class == SVC_MATRIX_ROWS) && (psVarType->Elements > 1) && ((psContext->flags & HLSLCC_FLAG_TRANSLATE_MATRICES) == 0))
-						{
-							// Special handling for matrix arrays, open them up into vec4's
-							size_t matidx = index / 4;
-							size_t rowidx = index - (matidx * 4);
-							oss << "[" << matidx << "][" << rowidx << "]";
-						}
-						else
-						{
-							oss << "[" << index << "]";
-						}
-					}
-					else if (psOperand->m_SubOperands[1].get() != NULL)
 				{
-					oss << "[" << TranslateOperand(psOperand->m_SubOperands[1].get(), TO_FLAG_INTEGER) << "]";
+					// Non-simple case: build vec4 and apply mask
+					uint32_t i;
+					int32_t tmpRebase;
+					std::vector<uint32_t> tmpArrayIndices;
+					bool tmpIsArray;
+					int firstItemAdded = 0;
+
+					oss << GetConstructorForTypeMetal(psVarType->Type, GetNumberBitsSet(ui32CompMask)) << "(";
+					for (i = 0; i < 4; i++)
+					{
+						const ShaderVarType *tmpVarType = NULL;
+						if ((ui32CompMask & (1 << i)) == 0)
+							continue;
+						tmpRebase = 0;
+						if (firstItemAdded != 0)
+							oss << ", ";
+						else
+							firstItemAdded = 1;
+
+						uint32_t tmpSwizzle[4] = { 0 };
+						std::copy(&psOperand->aui32Swizzle[i], &psOperand->aui32Swizzle[4], &tmpSwizzle[0]);
+
+						ShaderInfo::GetShaderVarFromOffset(psOperand->aui32ArraySizes[1], tmpSwizzle, psCBuf, &tmpVarType, &tmpIsArray, &tmpArrayIndices, &tmpRebase, psContext->flags);
+						std::string fullName = ShaderInfo::GetShaderVarIndexedFullName(tmpVarType, tmpArrayIndices, dynamicIndexStr, needsIndexCalcRevert, psContext->flags & HLSLCC_FLAG_TRANSLATE_MATRICES);
+							
+						if (tmpVarType->Class == SVC_SCALAR)
+						{
+							oss << cbName << fullName;
+						}
+						else
+						{
+							uint32_t swizzle;
+							tmpRebase /= 4; // 0 => 0, 4 => 1, 8 => 2, 12 /= 3
+							swizzle = psOperand->aui32Swizzle[i] - tmpRebase;
+
+							oss << cbName << fullName << "." << ("xyzw"[swizzle]);
+						}
+					}
+					oss << ")";
+					// Clear rebase, we've already done it.
+					rebase = 0;
+					// Also swizzle.
+					*pui32IgnoreSwizzle = 1;
 				}
+
+
+			    if (isArray)
+                { 
+					index = arrayIndices.back();
+
+                    // Dynamic index is atm supported only at the root array level. Add here only if there is no such parent.
+                    bool hasDynamicIndex = !dynamicIndexStr.empty() && (arrayIndices.size() <= 1);
+                    bool hasImmediateIndex = (index != -1) && !(hasDynamicIndex && index == 0);
+
+                    if (hasDynamicIndex || hasImmediateIndex)
+                    {
+                        std::ostringstream fullIndexOss;
+                        if (hasDynamicIndex && hasImmediateIndex)
+                            fullIndexOss << "(" << dynamicIndexStr << " + " << index << ")";
+                        else if (hasDynamicIndex)
+                            fullIndexOss << dynamicIndexStr;
+                        else // hasImmediateStr
+                            fullIndexOss << index;
+
+                        if (((psVarType->Class == SVC_MATRIX_COLUMNS) || (psVarType->Class == SVC_MATRIX_ROWS)) && (psVarType->Elements > 1) && ((psContext->flags & HLSLCC_FLAG_TRANSLATE_MATRICES) == 0))
+                        {
+                            // Special handling for old matrix arrays
+                            oss << "[" << fullIndexOss.str() << " / 4]";
+                            oss << "[" << fullIndexOss.str() << " %% 4]";
+                        }
+                        else // This path is atm the default
+                        {
+                           oss << "[" << fullIndexOss.str() << "]";
+                        }
+                    }
+                }
 
 				if(psVarType && psVarType->Class == SVC_VECTOR && !*pui32IgnoreSwizzle)
 				{
@@ -974,6 +979,7 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
 		case OPERAND_TYPE_UNORDERED_ACCESS_VIEW:
 		{
 			oss << ResourceName(RGROUP_UAV, psOperand->ui32RegisterNumber);
+			*pui32IgnoreSwizzle = 1;
 			break;
 		}
 		case OPERAND_TYPE_THREAD_GROUP_SHARED_MEMORY:

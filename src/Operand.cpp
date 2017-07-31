@@ -475,12 +475,11 @@ SHADER_VARIABLE_TYPE Operand::GetDataType(HLSLCrossCompilerContext* psContext, S
 		const ShaderVarType* psVarType = NULL;
 		int32_t rebase = -1;
 		bool isArray;
-		int foundVar;
 		psContext->psShader->sInfo.GetConstantBufferFromBindingPoint(RGROUP_CBUFFER, aui32ArraySizes[0], &psCBuf);
 		if (psCBuf)
 		{
-			foundVar = ShaderInfo::GetShaderVarFromOffset(aui32ArraySizes[1], aui32Swizzle, psCBuf, &psVarType, &isArray, NULL, &rebase, psContext->flags);
-			if (foundVar && m_SubOperands[1].get() == NULL) // TODO: why this suboperand thing?
+			int foundVar = ShaderInfo::GetShaderVarFromOffset(aui32ArraySizes[1], aui32Swizzle, psCBuf, &psVarType, &isArray, NULL, &rebase, psContext->flags);
+			if (foundVar)
 			{
 				return psVarType->Type;
 			}
@@ -583,4 +582,67 @@ int Operand::GetNumInputElements(const HLSLCrossCompilerContext *psContext) cons
 
 	// TODO: Are there ever any cases where the mask has 'holes'?
 	return HLSLcc::GetNumberBitsSet(psSig->ui32Mask);
+}
+
+Operand* Operand::GetDynamicIndexOperand(HLSLCrossCompilerContext *psContext, const ShaderVarType* psVar, bool isAoS, bool *needsIndexCalcRevert) const
+{
+    Operand *psDynIndexOp = m_SubOperands[0].get();
+    if (psDynIndexOp == NULL)
+        psDynIndexOp = m_SubOperands[1].get();
+
+    *needsIndexCalcRevert = false;
+    if (psDynIndexOp != NULL && isAoS)
+    {
+        // if dynamically indexing array of structs, try using the original index var before the float4 address calc
+        bool indexVarFound = false;
+        *needsIndexCalcRevert = true;
+        Instruction *psDynIndexOrigin = psDynIndexOp->m_Defines[0].m_Inst;
+        Operand *asOps = psDynIndexOrigin->asOperands;
+        Operand *psOriginOp = NULL;
+
+        // DXBC always addresses as float4, find the address calculation
+
+        // Special case where struct is float4 size, no extra calc is done
+        if (ShaderInfo::GetCBVarSize(psVar->Parent, true) <= 16) // matrixAsVectors arg does not matter here as with matrices the size will go over the limit anyway
+        {
+            indexVarFound = true;
+            *needsIndexCalcRevert = false;
+        }
+        else if (psDynIndexOrigin->eOpcode == OPCODE_IMUL)
+        {
+            // check which one of the src operands is the original index
+            if ((asOps[2].eType == OPERAND_TYPE_TEMP || asOps[2].eType == OPERAND_TYPE_INPUT) && asOps[3].eType == OPERAND_TYPE_IMMEDIATE32)
+                psOriginOp = &asOps[2];
+            else if ((asOps[3].eType == OPERAND_TYPE_TEMP || asOps[3].eType == OPERAND_TYPE_INPUT) &&  asOps[2].eType == OPERAND_TYPE_IMMEDIATE32)
+                psOriginOp = &asOps[3];
+        }
+        else if (psDynIndexOrigin->eOpcode == OPCODE_ISHL)
+        {
+            if (asOps[2].eType == OPERAND_TYPE_IMMEDIATE32)
+                psOriginOp = &asOps[1];
+        }
+
+        if (psOriginOp != NULL)
+        {
+            indexVarFound = true;
+
+            // Check if the mul dest is not the same temp as the src. Also check that the temp 
+            // does not have multiple uses (which could override the value)
+            // -> we can use src straight and no index revert calc is needed
+            if ((psOriginOp->eType == OPERAND_TYPE_INPUT)
+                || ((psOriginOp->ui32RegisterNumber != psDynIndexOp->ui32RegisterNumber || psOriginOp->GetDataType(psContext) != psDynIndexOp->GetDataType(psContext))
+                    && psOriginOp->m_Defines[0].m_Inst->m_Uses.size() == 1))
+            {
+                psDynIndexOp = psOriginOp;
+                *needsIndexCalcRevert = false;
+            }
+        }
+
+        // Atm we support only this very basic case of dynamic indexing array of structs.
+        // Return error if something else is encountered.
+        if (!indexVarFound)
+            psContext->m_Reflection.OnDiagnostics("Unsupported dynamic indexing scheme on constant buffer vars.", 0, true);
+    }
+
+    return psDynIndexOp;
 }
