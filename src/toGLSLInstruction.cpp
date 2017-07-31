@@ -1925,6 +1925,7 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 	bstring glsl = *psContext->currentGLSLString;
 	int numParenthesis = 0;
 	const bool isVulkan = ((psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) != 0);
+	const bool avoidAtomicCounter = ((psContext->flags & HLSLCC_FLAG_AVOID_SHADER_ATOMIC_COUNTERS) != 0);
 
 	if (!isEmbedded)
 	{
@@ -2130,10 +2131,10 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 						  }
 						  else
 						  {
-							  // Do component-wise and, glsl doesn't support && on bvecs
+							  // Do component-wise and, glsl doesn't support || on bvecs
 							  for (uint32_t k = 0; k < 4; k++)
 							  {
-								  if ((destMask && (1 << k)) == 0)
+								  if ((destMask & (1 << k)) == 0)
 									  continue;
 
 								  int needsParenthesis = 0;
@@ -2341,8 +2342,20 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 						bcatcstr(glsl, "//UDIV\n");
 #endif
 						//destQuotient, destRemainder, src0, src1
-						CallBinaryOp("/", psInst, 0, 2, 3, SVT_UINT);
-						CallBinaryOp("%", psInst, 1, 2, 3, SVT_UINT);
+
+						// There are cases where destQuotient is the same variable as src0 or src1. If that happens,
+						// we need to compute "%" before the "/" in order to avoid src0 or src1 being overriden first.
+						if ((psInst->asOperands[0].eType != psInst->asOperands[2].eType || psInst->asOperands[0].ui32RegisterNumber != psInst->asOperands[2].ui32RegisterNumber)
+						 && (psInst->asOperands[0].eType != psInst->asOperands[3].eType || psInst->asOperands[0].ui32RegisterNumber != psInst->asOperands[3].ui32RegisterNumber))
+						{
+							CallBinaryOp("/", psInst, 0, 2, 3, SVT_UINT);
+							CallBinaryOp("%", psInst, 1, 2, 3, SVT_UINT);
+						}
+						else
+						{
+							CallBinaryOp("%", psInst, 1, 2, 3, SVT_UINT);
+							CallBinaryOp("/", psInst, 0, 2, 3, SVT_UINT);
+						}
 						break;
 	}
 	case OPCODE_DIV:
@@ -3673,6 +3686,8 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 									break;
 								default:
 									ASSERT(0);
+									// Suppress uninitialised variable warning
+									srcDataType = SVT_VOID;
 									break;
 								}
 
@@ -4010,13 +4025,13 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 #endif
 		psContext->AddIndentation();
 		AddAssignToDest(&psInst->asOperands[0], SVT_UINT, 1, &numParenthesis);
-		if (isVulkan)
+		if (isVulkan || avoidAtomicCounter)
 			bcatcstr(glsl, "atomicAdd(");
 		else
 			bcatcstr(glsl, "atomicCounterIncrement(");
 		ResourceName(glsl, psContext, RGROUP_UAV, psInst->asOperands[1].ui32RegisterNumber, 0);
 		bformata(glsl, "_counter");
-		if (isVulkan)
+		if (isVulkan || avoidAtomicCounter)
 			bcatcstr(glsl, ", 1u)");
 		else
 			bcatcstr(glsl, ")");
@@ -4031,13 +4046,13 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 #endif
 		psContext->AddIndentation();
 		AddAssignToDest(&psInst->asOperands[0], SVT_UINT, 1, &numParenthesis);
-		if (isVulkan)
+		if (isVulkan || avoidAtomicCounter)
 			bcatcstr(glsl, "(atomicAdd(");
 		else
 			bcatcstr(glsl, "atomicCounterDecrement(");
 		ResourceName(glsl, psContext, RGROUP_UAV, psInst->asOperands[1].ui32RegisterNumber, 0);
 		bformata(glsl, "_counter");
-		if (isVulkan)
+		if (isVulkan || avoidAtomicCounter)
 			bcatcstr(glsl, ", 0xffffffffu) + 0xffffffffu)");
 		else
 			bcatcstr(glsl, ")");

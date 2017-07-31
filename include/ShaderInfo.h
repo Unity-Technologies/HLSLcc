@@ -451,6 +451,8 @@ public:
 
 	static ResourceGroup ResourceTypeToResourceGroup(ResourceType);
 
+    static uint32_t GetCBVarSize(const ShaderVarType* psType, bool matrixAsVectors, bool wholeArraySize = false);
+
 	static int GetShaderVarFromOffset(const uint32_t ui32Vec4Offset,
 		const uint32_t (&pui32Swizzle)[4],
 		const ConstantBuffer* psCBuf,
@@ -460,7 +462,7 @@ public:
 		int32_t* pi32Rebase,
 		uint32_t flags);
 
-	static std::string GetShaderVarIndexedFullName(const ShaderVarType* psShaderVar, std::vector<uint32_t> &indices);
+	static std::string GetShaderVarIndexedFullName(const ShaderVarType* psShaderVar, std::vector<uint32_t> &indices, const std::string dynamicIndex, bool revertDynamicIndexCalc, bool matrixAsVectors);
 
 	// Apply shader precision information to resource bindings
 	void AddSamplerPrecisions(HLSLccSamplerPrecisionInfo &info);

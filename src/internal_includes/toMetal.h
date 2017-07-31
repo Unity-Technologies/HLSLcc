@@ -165,6 +165,8 @@ private:
 	void AddComparison(Instruction* psInst, ComparisonType eType,
 		uint32_t typeFlag);
 
+	bool CanForceToHalfOperand(const Operand *psOperand);
+
 	void AddMOVBinaryOp(const Operand *pDest, Operand *pSrc);
 	void AddMOVCBinaryOp(const Operand *pDest, const Operand *src0, Operand *src1, Operand *src2);
 	void CallBinaryOp(const char* name, Instruction* psInst,

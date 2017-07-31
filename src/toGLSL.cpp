@@ -643,7 +643,7 @@ bool ToGLSL::Translate()
 
 			if ((psContext->flags & HLSLCC_FLAG_VULKAN_SPECIALIZATION_CONSTANTS) != 0)
 			{
-				DeclareSpecializationConstants(psShader->asPhases[i]);
+				DeclareSpecializationConstants(*psPhase);
 			}
 
 

@@ -5,13 +5,15 @@
 #include "internal_includes/Declaration.h"
 #include <algorithm>
 #include <sstream>
+#include <cmath>
 
+#ifndef fpcheck
 #ifdef _MSC_VER
 #define fpcheck(x) (_isnan(x) || !_finite(x))
 #else
-#include <cmath>
-#define fpcheck(x) ((std::isnan(x)) || (std::isinf(x)))
+#define fpcheck(x) (std::isnan(x) || std::isinf(x))
 #endif
+#endif // #ifndef fpcheck
 
 
 bool ToMetal::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::InOutSignature *sig, std::string &result, uint32_t *pui32IgnoreSwizzle, bool isIndexed, bool isInput, bool *outSkipPrefix)
@@ -34,6 +36,8 @@ bool ToMetal::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::I
 	case NAME_RENDER_TARGET_ARRAY_INDEX:
 		result = "mtl_Layer";
 		if (outSkipPrefix != NULL) *outSkipPrefix = true;
+		if (pui32IgnoreSwizzle)
+			*pui32IgnoreSwizzle = 1;
 		return true;
 	case NAME_CLIP_DISTANCE:
 	{
@@ -145,13 +149,8 @@ void ToMetal::DeclareBuiltinInput(const Declaration *psDecl)
 		m_StructDefinitions[""].m_Members.push_back("float4 mtl_FragCoord [[ position ]]");
 		break;
 	case NAME_RENDER_TARGET_ARRAY_INDEX:
-#if 0
 		// Only supported on a Mac
 		m_StructDefinitions[""].m_Members.push_back("uint mtl_Layer [[ render_target_array_index ]]");
-#else
-		// Not on Metal
-		ASSERT(0);
-#endif
 		break;
 	case NAME_CLIP_DISTANCE:
 		ASSERT(0); // Should never be an input
@@ -267,13 +266,8 @@ void ToMetal::DeclareBuiltinOutput(const Declaration *psDecl)
 			m_StructDefinitions[out].m_Members.push_back("float4 mtl_Position [[ position ]]");
 			break;
 		case NAME_RENDER_TARGET_ARRAY_INDEX:
-#if 0
 			// Only supported on a Mac
 			m_StructDefinitions[out].m_Members.push_back("uint mtl_Layer [[ render_target_array_index ]]");
-#else
-			// Not on Metal
-			ASSERT(0);
-#endif
 			break;
 		case NAME_CLIP_DISTANCE:
 			// it will be done separately in DeclareClipPlanes
@@ -663,8 +657,15 @@ static std::string TranslateResourceDeclaration(HLSLCrossCompilerContext* psCont
 				}
 			}
 		}
-		if (eDimension == RESOURCE_DIMENSION_BUFFER)
-			access = "read";
+		switch (eDimension)
+		{
+			case RESOURCE_DIMENSION_BUFFER:
+			case RESOURCE_DIMENSION_TEXTURE2DMS:
+			case RESOURCE_DIMENSION_TEXTURE2DMSARRAY:
+				access = "read";
+			default:
+				break;
+		}
 	}
 
 	SHADER_VARIABLE_TYPE svtType = HLSLcc::ResourceReturnTypeToSVTType(eType, ePrec);
@@ -768,19 +769,19 @@ static std::string GetInterpolationString(INTERPOLATION_MODE eMode)
 			return "";
 
 		case INTERPOLATION_LINEAR_CENTROID:
-			return " [[ centroid ]]";
+			return " [[ centroid_perspective ]]";
 
 		case INTERPOLATION_LINEAR_NOPERSPECTIVE:
-			return " [[ center_perspective ]]";
+			return " [[ center_no_perspective ]]";
 
 		case INTERPOLATION_LINEAR_NOPERSPECTIVE_CENTROID:
-			return " [[ centroid_noperspective ]]";
+			return " [[ centroid_no_perspective ]]";
 
 		case INTERPOLATION_LINEAR_SAMPLE:
 			return " [[ sample_perspective ]]";
 
 		case INTERPOLATION_LINEAR_NOPERSPECTIVE_SAMPLE:
-			return " [[ sample_noperspective ]]";
+			return " [[ sample_no_perspective ]]";
 		default:
 			ASSERT(0);
 			return "";
@@ -801,9 +802,17 @@ void ToMetal::DeclareStructVariable(const std::string &parentName, const ShaderV
 
 	if (var.Class == SVC_STRUCT)
 	{
-		std::ostringstream oss;
 		if (m_StructDefinitions.find(var.name + "_Type") == m_StructDefinitions.end())
 			DeclareStructType(var.name + "_Type", var.Members, withinCB, cumulativeOffset + var.Offset);
+
+		// Report Array-of-Struct CB top-level struct var after all members are reported.
+		if (var.Parent == NULL && var.Elements > 1 && withinCB)
+		{
+			// var.Type being SVT_VOID indicates it is a struct in this case.
+			psContext->m_Reflection.OnConstant(var.fullName, var.Offset + cumulativeOffset, var.Type, var.Rows, var.Columns, false, var.Elements);
+		}
+
+		std::ostringstream oss;
 		oss << var.name << "_Type " << var.name;
 		if (var.Elements > 1)
 		{
@@ -1197,6 +1206,13 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 			m_StructDefinitions[""].m_Members.push_back(oss.str());
 			break;
 		}
+		if (psOperand->eSpecialName == NAME_RENDER_TARGET_ARRAY_INDEX)
+		{
+			std::ostringstream oss;
+			oss << "uint " << name << " [[ render_target_array_index ]]";
+			m_StructDefinitions[""].m_Members.push_back(oss.str());
+			break;
+		}
 		if (psOperand->eType == OPERAND_TYPE_INPUT_THREAD_ID_IN_GROUP_FLATTENED)
 		{
 			std::ostringstream oss;
@@ -1484,7 +1500,7 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 						*(float*)&psDecl->asImmediateConstBuffer[i + chunk.first].d
 					};
 					if (fpcheck(val[chunk.second.m_Rebase]))
-						bformata(glsl, "\tas_type<float>(%Xu)", *(uint32_t *)&val[chunk.second.m_Rebase]);
+						bformata(glsl, "\tas_type<float>(0x%Xu)", *(uint32_t *)&val[chunk.second.m_Rebase]);
 					else
 					{
 						bcatcstr(glsl, "\t");
@@ -1511,7 +1527,7 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 						if (k != 0)
 							bcatcstr(glsl, ", ");
 				if (fpcheck(val[k]))
-							bformata(glsl, "as_type<float>(%Xu)", *(uint32_t *)&val[k + chunk.second.m_Rebase]);
+							bformata(glsl, "as_type<float>(0x%Xu)", *(uint32_t *)&val[k + chunk.second.m_Rebase]);
 				else
 							HLSLcc::PrintFloat(glsl, val[k + chunk.second.m_Rebase]);
 			}

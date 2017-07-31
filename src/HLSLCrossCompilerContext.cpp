@@ -101,7 +101,9 @@ void HLSLCrossCompilerContext::RequireExtension(const std::string &extName)
 		return;
 
 	m_EnabledExtensions.insert(extName);
+    bformata(extensions, "#ifdef %s\n", extName.c_str());
 	bformata(extensions, "#extension %s : require\n", extName.c_str());
+    bcatcstr(extensions, "#endif\n");
 }
 
 std::string HLSLCrossCompilerContext::GetDeclaredInputName(const Operand* psOperand, int *piRebase, int iIgnoreRedirect, uint32_t *puiIgnoreSwizzle) const

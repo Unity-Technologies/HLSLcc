@@ -457,11 +457,13 @@ namespace HLSLcc
 		return false;
 	}
 
+#ifndef fpcheck
 #ifdef _MSC_VER
 #define fpcheck(x) (_isnan(x) || !_finite(x))
 #else
 #define fpcheck(x) (std::isnan(x) || std::isinf(x))
 #endif
+#endif // #ifndef fpcheck
 
 	// Helper function to print floats with full precision
 	void PrintFloat(bstring b, float f)

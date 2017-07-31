@@ -12,16 +12,18 @@
 #include <float.h>
 #include <sstream>
 #include <algorithm>
+#include <cmath>
 #include "internal_includes/toGLSL.h"
 
 using namespace HLSLcc;
 
+#ifndef fpcheck
 #ifdef _MSC_VER
 #define fpcheck(x) (_isnan(x) || !_finite(x))
 #else
-#include <cmath>
-#define fpcheck(x) ((std::isnan(x)) || (std::isinf(x)))
+#define fpcheck(x) (std::isnan(x) || std::isinf(x))
 #endif
+#endif // #ifndef fpcheck
 
 static void DeclareConstBufferShaderVariable(const HLSLCrossCompilerContext *psContext, const char* Name, const struct ShaderVarType* psType, int unsizedArray, bool addUniformPrefix = false)
 	//const SHADER_VARIABLE_CLASS eClass, const SHADER_VARIABLE_TYPE eType,
@@ -877,14 +879,23 @@ static void DeclareUBOConstants(HLSLCrossCompilerContext* psContext, const uint3
 
 	if (psContext->flags & HLSLCC_FLAG_WRAP_UBO)
 		bformata(glsl, "#ifndef HLSLCC_DISABLE_UNIFORM_BUFFERS\n");
-	bcatcstr(glsl, "};\n");
+
+
+	if (psContext->flags & HLSLCC_FLAG_UNIFORM_BUFFER_OBJECT_WITH_INSTANCE_NAME)
+	{
+		std::string instanceName = UniformBufferInstanceName(psContext, psCBuf->name);
+		bformata(glsl, "} %s;\n", instanceName.c_str());
+	}
+	else
+		bcatcstr(glsl, "};\n");
+
 	if (psContext->flags & HLSLCC_FLAG_WRAP_UBO)
 		bformata(glsl, "#endif\n#undef UNITY_UNIFORM\n");
 }
 
 static void DeclareBufferVariable(HLSLCrossCompilerContext* psContext, uint32_t ui32BindingPoint,
 	const Operand* psOperand, const uint32_t ui32GloballyCoherentAccess,
-	const uint32_t isRaw, const uint32_t isUAV, const uint32_t stride, bstring glsl)
+	const uint32_t isRaw, const uint32_t isUAV, const uint32_t hasEmbeddedCounter, const uint32_t stride, bstring glsl)
 {
 	const bool isVulkan = (psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) != 0;
 	bstring BufNamebstr = bfromcstr("");
@@ -920,6 +931,9 @@ static void DeclareBufferVariable(HLSLCrossCompilerContext* psContext, uint32_t 
 		bcatcstr(glsl, "readonly ");
 
 	bformata(glsl, "buffer %s {\n\t", BufName.c_str());
+
+	if (hasEmbeddedCounter)
+		bformata(glsl, "coherent uint %s_counter;\n\t", BufName.c_str());
 
 	if (isRaw)
 		bcatcstr(glsl, "uint");
@@ -1201,7 +1215,10 @@ static void TranslateResourceTexture(HLSLCrossCompilerContext* psContext, const 
 	{
 		// Need to enable extension (either OES or ARB), but we only need to add it once
 		if (IsESLanguage(psContext->psShader->eTargetLanguage))
+        {
 			psContext->RequireExtension("GL_OES_texture_cube_map_array");
+            psContext->RequireExtension("GL_EXT_texture_cube_map_array");
+        }
 		else
 			psContext->RequireExtension("GL_ARB_texture_cube_map_array");
 	}
@@ -1997,8 +2014,8 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 				}
 				if(numViews > 0 && numViews < 10)
 				{
-					bcatcstr(extensions, "#extension GL_OVR_multiview : require\n");
-					bcatcstr(extensions, "#extension GL_OVR_multiview2 : enable\n");
+                    // multiview2 is required because we have built-in shaders that do eye-dependent work other than just position
+					bcatcstr(extensions, "#extension GL_OVR_multiview2 : require\n");
 
 					if(psShader->eShaderType == VERTEX_SHADER)
 						bformata(glsl, "layout(num_views = %d) in;\n", numViews);
@@ -2349,7 +2366,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 						};
 						bformata(tgt, "\tImmCB_%d_%d_%d[%d] = ", psContext->currentPhase, chunk.first, chunk.second.m_Rebase, i);
 						if (fpcheck(val[chunk.second.m_Rebase]))
-							bformata(tgt, "uintBitsToFloat(uint(%Xu))", *(uint32_t *)&val[chunk.second.m_Rebase]);
+							bformata(tgt, "uintBitsToFloat(uint(0x%Xu))", *(uint32_t *)&val[chunk.second.m_Rebase]);
 						else
 							HLSLcc::PrintFloat(tgt, val[chunk.second.m_Rebase]);
 						bcatcstr(tgt, ";\n");
@@ -2371,7 +2388,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 							if (k != 0)
 								bcatcstr(tgt, ", ");
 							if (fpcheck(val[k]))
-								bformata(tgt, "uintBitsToFloat(uint(%Xu))", *(uint32_t *)&val[k + chunk.second.m_Rebase]);
+								bformata(tgt, "uintBitsToFloat(uint(0x%Xu))", *(uint32_t *)&val[k + chunk.second.m_Rebase]);
 							else
 								HLSLcc::PrintFloat(tgt, val[k + chunk.second.m_Rebase]);
 						}
@@ -2807,6 +2824,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 		case OPCODE_DCL_UNORDERED_ACCESS_VIEW_STRUCTURED:
 		{
 			const bool isVulkan = (psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) != 0;
+			const bool avoidAtomicCounter = (psContext->flags & HLSLCC_FLAG_AVOID_SHADER_ATOMIC_COUNTERS) != 0;
 			if(psDecl->sUAV.bCounter)
 			{
 				if (isVulkan) 
@@ -2815,6 +2833,14 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 					GLSLCrossDependencyData::VulkanResourceBinding uavBinding = psContext->psDependencies->GetVulkanResourceBinding(uavname, true);
 					GLSLCrossDependencyData::VulkanResourceBinding counterBinding = std::make_pair(uavBinding.first, uavBinding.second+1);
 					bformata(glsl, "layout(set = %d, binding = %d) buffer %s_counterBuf { highp uint %s_counter; };\n", counterBinding.first, counterBinding.second, uavname.c_str(), uavname.c_str());
+
+					DeclareBufferVariable(psContext, psDecl->asOperands[0].ui32RegisterNumber, &psDecl->asOperands[0],
+						psDecl->sUAV.ui32GloballyCoherentAccess, 0, 1, 0, psDecl->ui32BufferStride, glsl);
+				}
+				else if (avoidAtomicCounter) // no support for atomic counter. We must use atomic functions in SSBO instead.
+				{
+					DeclareBufferVariable(psContext, psDecl->asOperands[0].ui32RegisterNumber, &psDecl->asOperands[0],
+						psDecl->sUAV.ui32GloballyCoherentAccess, 0, 1, 1, psDecl->ui32BufferStride, glsl);
 				}
 				else
 				{
@@ -2824,12 +2850,18 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 						bcatcstr(glsl, "highp ");
 					bcatcstr(glsl, "atomic_uint ");
 					ResourceName(glsl, psContext, RGROUP_UAV, psDecl->asOperands[0].ui32RegisterNumber, 0);
-					bformata(glsl, "_counter; \n");
+					bcatcstr(glsl, "_counter; \n");
+
+					DeclareBufferVariable(psContext, psDecl->asOperands[0].ui32RegisterNumber, &psDecl->asOperands[0],
+						psDecl->sUAV.ui32GloballyCoherentAccess, 0, 1, 0, psDecl->ui32BufferStride, glsl);
 				}
 			}
+			else
+			{
+				DeclareBufferVariable(psContext, psDecl->asOperands[0].ui32RegisterNumber, &psDecl->asOperands[0],
+					psDecl->sUAV.ui32GloballyCoherentAccess, 0, 1, 0, psDecl->ui32BufferStride, glsl);
+			}
 
-			DeclareBufferVariable(psContext, psDecl->asOperands[0].ui32RegisterNumber, &psDecl->asOperands[0],
-				psDecl->sUAV.ui32GloballyCoherentAccess, 0, 1, psDecl->ui32BufferStride, glsl);
 			break;
 		}
 		case OPCODE_DCL_UNORDERED_ACCESS_VIEW_RAW:
@@ -2856,20 +2888,20 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 			}
 
 			DeclareBufferVariable(psContext, psDecl->asOperands[0].ui32RegisterNumber, &psDecl->asOperands[0],
-				psDecl->sUAV.ui32GloballyCoherentAccess, 1, 1, psDecl->ui32BufferStride, glsl);
+				psDecl->sUAV.ui32GloballyCoherentAccess, 1, 1, 0, psDecl->ui32BufferStride, glsl);
 
 			break;
 		}
 		case OPCODE_DCL_RESOURCE_STRUCTURED:
 		{
 			DeclareBufferVariable(psContext, psDecl->asOperands[0].ui32RegisterNumber, &psDecl->asOperands[0],
-				psDecl->sUAV.ui32GloballyCoherentAccess, 0, 0, psDecl->ui32BufferStride, glsl);
+				psDecl->sUAV.ui32GloballyCoherentAccess, 0, 0, 0, psDecl->ui32BufferStride, glsl);
 			break;
 		}
 		case OPCODE_DCL_RESOURCE_RAW:
 		{
 			DeclareBufferVariable(psContext, psDecl->asOperands[0].ui32RegisterNumber, &psDecl->asOperands[0],
-				psDecl->sUAV.ui32GloballyCoherentAccess, 1, 0, psDecl->ui32BufferStride, glsl);
+				psDecl->sUAV.ui32GloballyCoherentAccess, 1, 0, 0, psDecl->ui32BufferStride, glsl);
 			break;
 		}
 		case OPCODE_DCL_THREAD_GROUP_SHARED_MEMORY_STRUCTURED:
