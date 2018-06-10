@@ -80,8 +80,8 @@ HLSLCC_API int HLSLCC_APIENTRY TranslateHLSLFromMem(const char* shader,
 
 		if (language == LANG_METAL)
 		{
-			// Tessellation or geometry shaders are not supported
-			if (psShader->eShaderType == HULL_SHADER || psShader->eShaderType == DOMAIN_SHADER || psShader->eShaderType == GEOMETRY_SHADER)
+			// Geometry shader is not supported
+			if (psShader->eShaderType == GEOMETRY_SHADER)
 			{
 				result->sourceCode = "";
 				return 0;
@@ -205,7 +205,7 @@ HLSLCC_API int HLSLCC_APIENTRY TranslateHLSLFromFile(const char* filename,
 	length = ftell(shaderFile);
 	fseek(shaderFile, 0, SEEK_SET);
 
-	shader.resize(length + 1);
+	shader.reserve(length + 1);
 
 	readLength = fread(&shader[0], 1, length, shaderFile);
 

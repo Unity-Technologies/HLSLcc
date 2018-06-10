@@ -7,7 +7,6 @@
 #include "internal_includes/toMetal.h"
 #include <cmath>
 #include <sstream>
-#include <algorithm>
 
 #include <float.h>
 #include <stdlib.h>
@@ -331,6 +330,16 @@ static std::string printImmediate32(uint32_t value, SHADER_VARIABLE_TYPE eType)
 	return oss.str();
 }
 
+static std::string MakeCBVarName(const std::string &cbName, const std::string &fullName, bool isUnityInstancingBuffer)
+{
+    // For Unity instancing buffer: "CBufferName.StructTypeName[] -> CBufferName[]". See ToMetal::DeclareConstantBuffer.
+    if (isUnityInstancingBuffer && !cbName.empty() && cbName[cbName.size() - 1] == '.' && fullName.find_first_of('[') != std::string::npos)
+    {
+        return cbName.substr(0, cbName.size() - 1) + fullName.substr(fullName.find_first_of('['));
+    }
+    return cbName + fullName;
+}
+
 std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui32TOFlag, uint32_t* pui32IgnoreSwizzle, uint32_t ui32CompMask, int *piRebase)
 {
 	std::ostringstream oss;
@@ -402,7 +411,7 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
 		bool bitcast = false;
 		if (AreTypesCompatibleMetal(eType, ui32TOFlag) == 0)
 		{
-			if (CanDoDirectCast(eType, requestedType))
+			if (CanDoDirectCast(psContext, eType, requestedType))
 			{
 				oss << GetConstructorForType(psContext, requestedType, requestedComponents, false) << "(";
 				numParenthesis++;
@@ -490,19 +499,15 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
 				{
 					const ShaderInfo::InOutSignature *psSig = NULL;
 					psContext->psShader->sInfo.GetInputSignatureFromRegister(psOperand->ui32RegisterNumber, psOperand->ui32CompMask, &psSig);
-					if ((psSig->eSystemValueType == NAME_POSITION && psSig->ui32SemanticIndex == 0) ||
-						(psSig->semanticName == "POS" && psSig->ui32SemanticIndex == 0) ||
-						(psSig->semanticName == "SV_POSITION" && psSig->ui32SemanticIndex == 0))
+					if (psContext->psShader->eShaderType == HULL_SHADER || psContext->psShader->eShaderType == DOMAIN_SHADER)
 					{
-						// Shouldn't happen on Metal?
-						ASSERT(0);
-						break;
-//						bcatcstr(glsl, "gl_in");
-//						TranslateOperandIndex(psOperand, 0);//Vertex index
-//						bcatcstr(glsl, ".gl_Position");
+						oss << "input.cp";
+						oss << TranslateOperandIndex(psOperand, 0);//Vertex index
+						oss << "." << psContext->GetDeclaredInputName(psOperand, piRebase, 1, pui32IgnoreSwizzle);
 					}
 					else
 					{
+						// Not sure if this codepath is active outside hull/domain
 						oss << psContext->GetDeclaredInputName(psOperand, piRebase, 0, pui32IgnoreSwizzle);
 
 						oss << TranslateOperandIndex(psOperand, 0);//Vertex index
@@ -654,6 +659,7 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
 			int32_t index = -1;
 			std::vector<uint32_t> arrayIndices;
 			bool isArray = false;
+			bool isFBInput = false;
 			psContext->psShader->sInfo.GetConstantBufferFromBindingPoint(RGROUP_CBUFFER, psOperand->aui32ArraySizes[0], &psCBuf);
 			ASSERT(psCBuf != NULL);
 
@@ -665,14 +671,7 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
 			if(psCBuf)
 			{
 				//$Globals.
-				if(psCBuf->name[0] == '$')
-				{
-					cbName = "Globals";
-				}
-				else
-				{
-					cbName = psCBuf->name;
-				}
+				cbName = GetCBName(psCBuf->name);
 				cbName += ".";
 				// Drop the constant buffer name from subpass inputs
 				if (cbName.substr(0, 19) == "hlslcc_SubpassInput")
@@ -702,13 +701,23 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
 					componentsNeeded = maxSwiz - minSwiz + 1;
 				}
 
-				ShaderInfo::GetShaderVarFromOffset(psOperand->aui32ArraySizes[1], psOperand->aui32Swizzle, psCBuf, &psVarType, &isArray, &arrayIndices, &rebase, psContext->flags);
+                // When we have a component mask that doesn't have .x set (this basically only happens when we manually open operands into components)
+                // We have to pull down the swizzle array to match the first bit that's actually set
+                uint32_t tmpSwizzle[4] = { 0 };
+                int firstBitSet = 0;
+                if (ui32CompMask == 0)
+                    ui32CompMask = 0xf;
+                while ((ui32CompMask & (1 << firstBitSet)) == 0)
+                    firstBitSet++;
+                std::copy(&psOperand->aui32Swizzle[firstBitSet], &psOperand->aui32Swizzle[4], &tmpSwizzle[0]);
+
+                ShaderInfo::GetShaderVarFromOffset(psOperand->aui32ArraySizes[1], tmpSwizzle, psCBuf, &psVarType, &isArray, &arrayIndices, &rebase, psContext->flags);
 
                 // Get a possible dynamic array index
-                std::ostringstream dynIndexOss;
+                std::string dynamicIndexStr;
                 bool needsIndexCalcRevert = false;
                 bool isAoS = ((!isArray && arrayIndices.size() > 0) || (isArray && arrayIndices.size() > 1));
-
+                bool isUnityInstancingBuffer = isAoS && IsUnityFlexibleInstancingBuffer(psCBuf);
                 Operand *psDynIndexOp = psOperand->GetDynamicIndexOperand(psContext, psVarType, isAoS, &needsIndexCalcRevert);
 
                 if (psDynIndexOp != NULL)
@@ -719,16 +728,18 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
                     if (eType != SVT_INT && eType != SVT_UINT)
                         opFlags = TO_AUTO_BITCAST_TO_INT;
 
-                    dynIndexOss << TranslateOperand(psDynIndexOp, opFlags);
+                    dynamicIndexStr = TranslateOperand(psDynIndexOp, opFlags, 0x1); // Just take the first component for the index
                 }
-
-                std::string dynamicIndexStr = dynIndexOss.str();
 
 				if (psOperand->eSelMode == OPERAND_4_COMPONENT_SELECT_1_MODE || (componentsNeeded <= psVarType->Columns))
 				{
 					// Simple case: just access one component
 					std::string fullName = ShaderInfo::GetShaderVarIndexedFullName(psVarType, arrayIndices, dynamicIndexStr, needsIndexCalcRevert, psContext->flags & HLSLCC_FLAG_TRANSLATE_MATRICES);
 						
+					// Special hack for MSAA subpass inputs: in Metal we can only read the "current" sample, so ignore the index
+					if (strncmp(fullName.c_str(), "hlslcc_fbinput", 14) == 0)
+						isFBInput = true;
+
 					if (((psContext->flags & HLSLCC_FLAG_TRANSLATE_MATRICES) != 0) && ((psVarType->Class == SVC_MATRIX_ROWS) || (psVarType->Class == SVC_MATRIX_COLUMNS)))
 					{
 						// We'll need to add the prefix only to the last section of the name
@@ -741,7 +752,7 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
 							fullName.insert(commaPos + 1, prefix);
 					}
 
-					oss << cbName << fullName;
+                    oss << MakeCBVarName(cbName, fullName, isUnityInstancingBuffer);
 				}
 				else
 				{
@@ -769,18 +780,15 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
 
 						ShaderInfo::GetShaderVarFromOffset(psOperand->aui32ArraySizes[1], tmpSwizzle, psCBuf, &tmpVarType, &tmpIsArray, &tmpArrayIndices, &tmpRebase, psContext->flags);
 						std::string fullName = ShaderInfo::GetShaderVarIndexedFullName(tmpVarType, tmpArrayIndices, dynamicIndexStr, needsIndexCalcRevert, psContext->flags & HLSLCC_FLAG_TRANSLATE_MATRICES);
-							
-						if (tmpVarType->Class == SVC_SCALAR)
-						{
-							oss << cbName << fullName;
-						}
-						else
+                        oss << MakeCBVarName(cbName, fullName, isUnityInstancingBuffer);
+
+						if (tmpVarType->Class != SVC_SCALAR)
 						{
 							uint32_t swizzle;
 							tmpRebase /= 4; // 0 => 0, 4 => 1, 8 => 2, 12 /= 3
 							swizzle = psOperand->aui32Swizzle[i] - tmpRebase;
 
-							oss << cbName << fullName << "." << ("xyzw"[swizzle]);
+							oss << "." << ("xyzw"[swizzle]);
 						}
 					}
 					oss << ")";
@@ -799,7 +807,12 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
                     bool hasDynamicIndex = !dynamicIndexStr.empty() && (arrayIndices.size() <= 1);
                     bool hasImmediateIndex = (index != -1) && !(hasDynamicIndex && index == 0);
 
-                    if (hasDynamicIndex || hasImmediateIndex)
+					// Ignore index altogether on fb inputs
+					if (isFBInput)
+					{
+						// Nothing to do here
+					}
+					else if (hasDynamicIndex || hasImmediateIndex)
                     {
                         std::ostringstream fullIndexOss;
                         if (hasDynamicIndex && hasImmediateIndex)
@@ -901,34 +914,47 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
 		case OPERAND_TYPE_INPUT_FORK_INSTANCE_ID:
 		case OPERAND_TYPE_INPUT_JOIN_INSTANCE_ID:
 		{
-			// Not supported on Metal
-			ASSERT(0);
+			oss << "phaseInstanceID"; // Not a real builtin, but passed as a function parameter.
+			*pui32IgnoreSwizzle = 1;
 			break;
 		}
 		case OPERAND_TYPE_IMMEDIATE_CONSTANT_BUFFER:
 		{
-			oss << "ImmCB_" << psContext->currentPhase
-				<< "_" << psOperand->ui32RegisterNumber
-				<< "_" << psOperand->m_Rebase;
-			if (psOperand->m_SubOperands[0].get())
-			{
-				//Indexes must be integral. Offset is already taken care of above.
-				oss << "[" << TranslateOperand(psOperand->m_SubOperands[0].get(), TO_FLAG_INTEGER) << "]";
-			}
-			if (psOperand->m_Size == 1)
-				*pui32IgnoreSwizzle = 1;
+			oss << "ImmCB_" << psContext->currentPhase;
+			oss << TranslateOperandIndex(psOperand, 0);
 			break;
 		}
 		case OPERAND_TYPE_INPUT_DOMAIN_POINT:
 		{
-			// Not supported on Metal
-			ASSERT(0);
+			oss << "mtl_TessCoord";
 			break;
 		}
 		case OPERAND_TYPE_INPUT_CONTROL_POINT:
 		{
-			// Not supported on Metal
-			ASSERT(0);
+			int ignoreRedirect = 1;
+			int regSpace = psOperand->GetRegisterSpace(psContext);
+
+			if ((regSpace == 0 && psContext->psShader->asPhases[psContext->currentPhase].acInputNeedsRedirect[psOperand->ui32RegisterNumber] == 0xfe) ||
+				(regSpace == 1 && psContext->psShader->asPhases[psContext->currentPhase].acPatchConstantsNeedsRedirect[psOperand->ui32RegisterNumber] == 0xfe))
+			{
+				ignoreRedirect = 0;
+			}
+
+			if (ignoreRedirect)
+			{
+				oss << "input.cp";
+				oss << TranslateOperandIndex(psOperand, 0);//Vertex index
+				oss << "." << psContext->GetDeclaredInputName(psOperand, piRebase, ignoreRedirect, pui32IgnoreSwizzle);
+			}
+			else
+			{
+				oss << psContext->GetDeclaredInputName(psOperand, piRebase, ignoreRedirect, pui32IgnoreSwizzle);
+				oss << TranslateOperandIndex(psOperand, 0);//Vertex index
+			}
+
+			// Check for scalar
+			if ((psContext->psShader->abScalarInput[psOperand->GetRegisterSpace(psContext)][psOperand->ui32RegisterNumber] & psOperand->GetAccessMask()) != 0)
+				*pui32IgnoreSwizzle = 1;
 			break;
 		}
 		case OPERAND_TYPE_NULL:
@@ -939,8 +965,8 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
 		}
 		case OPERAND_TYPE_OUTPUT_CONTROL_POINT_ID:
 		{
-			// Not supported on Metal
-			ASSERT(0);
+			oss << "controlPointID";
+			*pui32IgnoreSwizzle = 1;
 			break;
 		}
 		case OPERAND_TYPE_OUTPUT_COVERAGE_MASK:
@@ -1030,9 +1056,101 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
 		}
 		case OPERAND_TYPE_INPUT_PATCH_CONSTANT:
 		{
-			// Not supported on Metal
-			ASSERT(0);
+			const ShaderInfo::InOutSignature* psIn;
+			psContext->psShader->sInfo.GetPatchConstantSignatureFromRegister(psOperand->ui32RegisterNumber, psOperand->GetAccessMask(), &psIn);
+			*piRebase = psIn->iRebase;
+			switch (psIn->eSystemValueType)
+			{
+				case NAME_POSITION:
+					oss << "mtl_Position";
+					break;
+				case NAME_RENDER_TARGET_ARRAY_INDEX:
+					oss << "mtl_Layer";
+					*pui32IgnoreSwizzle = 1;
+					break;
+				case NAME_CLIP_DISTANCE:
+					// this is temp variable, declaration and redirecting to actual output is handled in DeclareClipPlanes
+					char tmpName[128]; sprintf(tmpName, "phase%d_ClipDistance%d", psContext->currentPhase, psIn->ui32SemanticIndex);
+					oss << tmpName;
+					*pui32IgnoreSwizzle = 1;
+					break;
+				case NAME_VIEWPORT_ARRAY_INDEX:
+					oss << "mtl_ViewPortIndex";
+					*pui32IgnoreSwizzle = 1;
+					break;
+				case NAME_VERTEX_ID:
+					oss << "mtl_VertexID";
+					*pui32IgnoreSwizzle = 1;
+					break;
+				case NAME_INSTANCE_ID:
+					oss << "mtl_InstanceID";
+					*pui32IgnoreSwizzle = 1;
+					break;
+				case NAME_IS_FRONT_FACE:
+					oss << "(mtl_FrontFace ? 0xffffffffu : uint(0))";
+					*pui32IgnoreSwizzle = 1;
+					break;
+				case NAME_PRIMITIVE_ID:
+					// Not on Metal
+					ASSERT(0);
+					break;
+				case NAME_FINAL_QUAD_U_EQ_0_EDGE_TESSFACTOR:
+				case NAME_FINAL_TRI_U_EQ_0_EDGE_TESSFACTOR:
+				case NAME_FINAL_LINE_DENSITY_TESSFACTOR:
+					if (psContext->psShader->aIndexedOutput[1][psOperand->ui32RegisterNumber])
+						oss << "edgeTessellationFactor";
+					else
+						oss << "edgeTessellationFactor[0]";
+					*pui32IgnoreSwizzle = 1;
+					break;
+				case NAME_FINAL_QUAD_V_EQ_0_EDGE_TESSFACTOR:
+				case NAME_FINAL_TRI_V_EQ_0_EDGE_TESSFACTOR:
+				case NAME_FINAL_LINE_DETAIL_TESSFACTOR:
+					oss << "edgeTessellationFactor[1]";
+					*pui32IgnoreSwizzle = 1;
+					break;
+				case NAME_FINAL_QUAD_U_EQ_1_EDGE_TESSFACTOR:
+				case NAME_FINAL_TRI_W_EQ_0_EDGE_TESSFACTOR:
+					oss << "edgeTessellationFactor[2]";
+					*pui32IgnoreSwizzle = 1;
+					break;
+				case NAME_FINAL_QUAD_V_EQ_1_EDGE_TESSFACTOR:
+					oss << "edgeTessellationFactor[3]";
+					*pui32IgnoreSwizzle = 1;
+					break;
+				case NAME_FINAL_TRI_INSIDE_TESSFACTOR:
+				case NAME_FINAL_QUAD_U_INSIDE_TESSFACTOR:
+					if (psContext->psShader->aIndexedOutput[1][psOperand->ui32RegisterNumber])
+						oss << "insideTessellationFactor";
+					else
+						oss << "insideTessellationFactor[0]";
+					*pui32IgnoreSwizzle = 1;
+					break;
+				case NAME_FINAL_QUAD_V_INSIDE_TESSFACTOR:
+					oss << "insideTessellationFactor[1]";
+					*pui32IgnoreSwizzle = 1;
+					break;
+				default:
+					const std::string patchPrefix = "patch.";
 
+					if (psContext->psShader->eShaderType == DOMAIN_SHADER)
+						oss << psContext->inputPrefix << patchPrefix << psIn->semanticName << psIn->ui32SemanticIndex;
+					else
+						oss << patchPrefix << psIn->semanticName << psIn->ui32SemanticIndex;
+
+					// Disable swizzles if this is a scalar
+					if (psContext->psShader->eShaderType == HULL_SHADER)
+					{
+						if ((psContext->psShader->abScalarOutput[1][psOperand->ui32RegisterNumber] & psOperand->GetAccessMask()) != 0)
+							*pui32IgnoreSwizzle = 1;
+					}
+					else
+					{
+						if ((psContext->psShader->abScalarInput[1][psOperand->ui32RegisterNumber] & psOperand->GetAccessMask()) != 0)
+							*pui32IgnoreSwizzle = 1;
+					}
+					break;
+			}
 			break;
 		}
 		default:

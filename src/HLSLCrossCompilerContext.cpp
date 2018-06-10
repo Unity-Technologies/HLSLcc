@@ -8,6 +8,7 @@
 #include "internal_includes/debug.h"
 #include "internal_includes/Translator.h"
 #include "internal_includes/ControlFlowGraph.h"
+#include "include/hlslcc.h"
 #include <sstream>
 
 void HLSLCrossCompilerContext::DoDataTypeAnalysis(ShaderPhase *psPhase)
@@ -95,15 +96,26 @@ void HLSLCrossCompilerContext::AddIndentation()
 	}
 }
 
-void HLSLCrossCompilerContext::RequireExtension(const std::string &extName)
+bool HLSLCrossCompilerContext::RequireExtension(const std::string &extName)
 {
 	if (m_EnabledExtensions.find(extName) != m_EnabledExtensions.end())
-		return;
+		return true;
 
 	m_EnabledExtensions.insert(extName);
-    bformata(extensions, "#ifdef %s\n", extName.c_str());
 	bformata(extensions, "#extension %s : require\n", extName.c_str());
-    bcatcstr(extensions, "#endif\n");
+	return false;
+}
+
+bool HLSLCrossCompilerContext::EnableExtension(const std::string &extName)
+{
+	if (m_EnabledExtensions.find(extName) != m_EnabledExtensions.end())
+		return true;
+
+	m_EnabledExtensions.insert(extName);
+	bformata(extensions, "#ifdef %s\n", extName.c_str());
+	bformata(extensions, "#extension %s : enable\n", extName.c_str());
+	bcatcstr(extensions, "#endif\n");
+	return false;
 }
 
 std::string HLSLCrossCompilerContext::GetDeclaredInputName(const Operand* psOperand, int *piRebase, int iIgnoreRedirect, uint32_t *puiIgnoreSwizzle) const
@@ -133,9 +145,11 @@ std::string HLSLCrossCompilerContext::GetDeclaredInputName(const Operand* psOper
 	if (psIn && piRebase)
 		*piRebase = psIn->iRebase;
 
+	const std::string patchPrefix = psShader->eTargetLanguage == LANG_METAL ? "patch." : "patch";
 	std::string res = "";
+
 	bool skipPrefix = false;
-	if (psTranslator->TranslateSystemValue(psOperand, psIn, res, puiIgnoreSwizzle, psShader->aIndexedInput[regSpace][psOperand->ui32RegisterNumber] != 0, true, &skipPrefix))
+	if (psTranslator->TranslateSystemValue(psOperand, psIn, res, puiIgnoreSwizzle, psShader->aIndexedInput[regSpace][psOperand->ui32RegisterNumber] != 0, true, &skipPrefix, &iIgnoreRedirect))
 	{
 		if (psShader->eTargetLanguage == LANG_METAL && (iIgnoreRedirect == 0) && !skipPrefix)
 			return inputPrefix + res;
@@ -144,7 +158,7 @@ std::string HLSLCrossCompilerContext::GetDeclaredInputName(const Operand* psOper
 	}
 
 	ASSERT(psIn != NULL);
-	oss << inputPrefix << (regSpace == 1 ? "patch" : "") << psIn->semanticName << psIn->ui32SemanticIndex;
+	oss << inputPrefix << (regSpace == 1 ? patchPrefix : "") << psIn->semanticName << psIn->ui32SemanticIndex;
 	return oss.str();
 }
 
@@ -193,23 +207,25 @@ std::string HLSLCrossCompilerContext::GetDeclaredOutputName(const Operand* psOpe
 		return oss.str();
 	}
 
+	const std::string patchPrefix = psShader->eTargetLanguage == LANG_METAL ? "patch." : "patch";
 	std::string res = "";
-	if (psTranslator->TranslateSystemValue(psOperand, psOut, res, puiIgnoreSwizzle, psShader->aIndexedOutput[regSpace][psOperand->ui32RegisterNumber], false))
+
+	if (psTranslator->TranslateSystemValue(psOperand, psOut, res, puiIgnoreSwizzle, psShader->aIndexedOutput[regSpace][psOperand->ui32RegisterNumber], false, NULL, &iIgnoreRedirect))
 	{
-		// HACK: i couldnt find better way to handle it
-		// clip planes will always have interim variable, as HLSL operates on float4 but we need to size output accordingly with actual planes count
-		// for some reason TranslateSystemValue return *outSkipPrefix = true for ALL system vars and then we simply ignore it here
-		const bool isClipPlanes = psOut && psOut->eSystemValueType == NAME_CLIP_DISTANCE;
+		// clip/cull planes will always have interim variable, as HLSL operates on float4 but we need to size output accordingly with actual planes count
+		// with tessellation factor buffers, a separate buffer from output is used. for some reason TranslateSystemValue return *outSkipPrefix = true
+		// for ALL system vars and then we simply ignore it here, so opt to modify iIgnoreRedirect for these special cases
 
-		if (psShader->eTargetLanguage == LANG_METAL && (iIgnoreRedirect == 0) && !isClipPlanes)
-
+		if (psShader->eTargetLanguage == LANG_METAL && regSpace == 0 && (iIgnoreRedirect == 0))
 			return outputPrefix + res;
+		else if (psShader->eTargetLanguage == LANG_METAL && (iIgnoreRedirect == 0))
+			return patchPrefix + res;
 		else
 			return res;
 	}
 	ASSERT(psOut != NULL);
 
-	oss << outputPrefix << (regSpace == 1 ? "patch" : "") << psOut->semanticName << psOut->ui32SemanticIndex;
+	oss << outputPrefix << (regSpace == 1 ? patchPrefix : "") << psOut->semanticName << psOut->ui32SemanticIndex;
 	return oss.str();
 }
 
@@ -275,3 +291,9 @@ bool HLSLCrossCompilerContext::OutputNeedsDeclaring(const Operand* psOperand, co
 
 	return false;
 }
+
+bool HLSLCrossCompilerContext::IsVulkan() const
+{
+	return (flags & HLSLCC_FLAG_VULKAN_BINDINGS) != 0;
+}
+

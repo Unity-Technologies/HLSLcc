@@ -6,10 +6,6 @@
 #include <vector>
 #include <memory>
 
-#ifdef __APPLE__
-#include <tr1/memory>
-#endif
-
 #include <stdint.h>
 
 struct Instruction;
@@ -17,12 +13,7 @@ class Operand;
 
 namespace HLSLcc
 {
-#ifdef __APPLE__
-    // Herp derp Apple is stuck in 2005
-    using namespace std::tr1;
-#else
     using namespace std;
-#endif
     
 	namespace ControlFlow
 	{

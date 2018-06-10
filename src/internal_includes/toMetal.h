@@ -4,79 +4,6 @@
 #include <map>
 #include <vector>
 
-// We store struct definition contents inside a vector of strings
-struct StructDefinition
-{
-	StructDefinition() : m_Members(), m_Dependencies(), m_IsPrinted(false) {}
-
-	std::vector<std::string> m_Members; // A vector of strings with the struct members
-	std::vector<std::string> m_Dependencies; // A vector of struct names this struct depends on.
-	bool m_IsPrinted; // Has this struct been printed out yet?
-};
-
-typedef std::map<std::string, StructDefinition> StructDefinitions;
-
-// Map of extra function definitions we need to add before the shader body but after the declarations.
-typedef std::map<std::string, std::string> FunctionDefinitions;
-
-// A helper class for allocating binding slots
-// (because both UAVs and textures use the same slots in Metal, also constant buffers and other buffers etc)
-class BindingSlotAllocator
-{
-	typedef std::map<uint32_t, uint32_t> SlotMap;
-	SlotMap m_Allocations;
-public:
-	BindingSlotAllocator() : m_Allocations()
-	{
-		for(int i = MAX_RESOURCE_BINDINGS-1; i >= 0; i --)
-			m_FreeSlots.push_back(i);
-	}
-
-	enum BindType
-	{
-		ConstantBuffer = 0,
-		RWBuffer,
-		Texture,
-		UAV
-	};
-
-	uint32_t GetBindingSlot(uint32_t regNo, BindType type)
-	{
-		// The key is regNumber with the bindtype stored to highest 16 bits
-		uint32_t key = regNo | (uint32_t(type) << 16);
-		SlotMap::iterator itr = m_Allocations.find(key);
-		if(itr == m_Allocations.end())
-		{
-			uint32_t slot = m_FreeSlots.back();
-			m_FreeSlots.pop_back();
-			m_Allocations.insert(std::make_pair(key, slot));
-			return slot;
-		}
-		return itr->second;
-	}
-	
-	// Func for reserving binding slots with the original reg number.
-	// Used for fragment shader UAVs (SetRandomWriteTarget etc).
-	void ReserveBindingSlot(uint32_t regNo, BindType type)
-	{
-		uint32_t key = regNo | (uint32_t(type) << 16);
-		m_Allocations.insert(std::make_pair(key, regNo));
-		
-		// Remove regNo from free slots
-		for (int i = m_FreeSlots.size() - 1; i >= 0; i--)
-		{
-			if (m_FreeSlots[i] == regNo)
-			{
-				m_FreeSlots.erase(m_FreeSlots.begin() + i);
-				return;
-			}
-		}
-	}
-
-private:
-	std::vector<uint32_t> m_FreeSlots;
-};
-
 struct SamplerDesc
 {
 	std::string name;
@@ -87,9 +14,10 @@ struct TextureSamplerDesc
 	std::string name;
 	int textureBind, samplerBind;
 	HLSLCC_TEX_DIMENSION dim;
+	bool isMultisampled;
+	bool isDepthSampler;
 	bool uav;
 };
-
 
 class ToMetal : public Translator
 {
@@ -105,7 +33,7 @@ public:
 
 	virtual bool Translate();
 	virtual void TranslateDeclaration(const Declaration *psDecl);
-	virtual bool TranslateSystemValue(const Operand *psOperand, const ShaderInfo::InOutSignature *sig, std::string &result, uint32_t *pui32IgnoreSwizzle, bool isIndexed, bool isInput, bool *outSkipPrefix = NULL);
+	virtual bool TranslateSystemValue(const Operand *psOperand, const ShaderInfo::InOutSignature *sig, std::string &result, uint32_t *pui32IgnoreSwizzle, bool isIndexed, bool isInput, bool *outSkipPrefix = NULL, int *iIgnoreRedirect = NULL);
 	std::string TranslateOperand(const Operand *psOp, uint32_t flags, uint32_t ui32ComponentMask = OPERAND_4_COMPONENT_MASK_ALL);
 
 	virtual void SetIOPrefixes();
@@ -121,7 +49,9 @@ private:
 	// Retrieve the name of the output struct for this shader
 	std::string GetOutputStructName() const;
 	std::string GetInputStructName() const;
+	std::string GetCBName(const std::string& cbName) const;
 
+	void DeclareHullShaderPassthrough();
 	void HandleInputRedirect(const Declaration *psDecl, const std::string &typeName);
 	void HandleOutputRedirect(const Declaration *psDecl, const std::string &typeName);
 
@@ -137,7 +67,7 @@ private:
 
 	void DeclareOutput(const Declaration *decl);
 
-	void PrintStructDeclarations(StructDefinitions &defs);
+	void PrintStructDeclarations(StructDefinitions &defs, const char *name = "");
 
 	std::string ResourceName(ResourceGroup group, const uint32_t ui32RegisterNumber);
 
@@ -173,6 +103,8 @@ private:
 		int dest, int src0, int src1, SHADER_VARIABLE_TYPE eDataType);
 	void CallTernaryOp(const char* op1, const char* op2, Instruction* psInst,
 		int dest, int src0, int src1, int src2, uint32_t dataType);
+	void CallHelper3(const char* name, Instruction* psInst,
+		int dest, int src0, int src1, int src2, int paramsShouldFollowWriteMask, uint32_t ui32Flags);
 	void CallHelper3(const char* name, Instruction* psInst,
 		int dest, int src0, int src1, int src2, int paramsShouldFollowWriteMask);
 	void CallHelper2(const char* name, Instruction* psInst,

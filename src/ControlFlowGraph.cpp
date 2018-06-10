@@ -341,7 +341,7 @@ void BasicBlock::RVarUnion(ReachableVariables &a, const ReachableVariables &b)
 #define UNITY_EXTERNAL_TOOL 1
 #include "Testing.h" // From Runtime/Testing
 
-UNIT_TEST_SUITE(HLSLccTests)
+UNIT_TEST_SUITE(HLSLcc)
 {
 	TEST(ControlFlowGraph_Build_Simple_Works)
 	{

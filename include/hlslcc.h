@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <algorithm>
 
 #if defined (_WIN32) && defined(HLSLCC_DYNLIB)
     #define HLSLCC_APIENTRY __stdcall
@@ -48,6 +49,7 @@ typedef struct GlExtensions {
 } GlExtensions;
 
 #include "ShaderInfo.h"
+#include "UnityInstancingFlexibleArraySize.h"
 
 typedef std::vector<std::string> TextureSamplerPairs;
 
@@ -122,6 +124,88 @@ typedef enum
 // The prefix for all temporary variables used by the generated code.
 // Using a texture or uniform name like this will cause conflicts
 #define HLSLCC_TEMP_PREFIX "u_xlat"
+
+typedef std::vector<std::pair<std::string, std::string>> MemberDefinitions;
+
+// We store struct definition contents inside a vector of strings
+struct StructDefinition
+{
+	StructDefinition() : m_Members(), m_Dependencies(), m_IsPrinted(false) {}
+
+	MemberDefinitions m_Members; // A vector of strings with the struct members
+	std::vector<std::string> m_Dependencies; // A vector of struct names this struct depends on.
+	bool m_IsPrinted; // Has this struct been printed out yet?
+};
+
+typedef std::map<std::string, StructDefinition> StructDefinitions;
+
+// Map of extra function definitions we need to add before the shader body but after the declarations.
+typedef std::map<std::string, std::string> FunctionDefinitions;
+
+// A helper class for allocating binding slots
+// (because both UAVs and textures use the same slots in Metal, also constant buffers and other buffers etc)
+class BindingSlotAllocator
+{
+	typedef std::map<uint32_t, uint32_t> SlotMap;
+	SlotMap m_Allocations;
+	uint32_t m_ShaderStageAllocations;
+public:
+	BindingSlotAllocator() : m_Allocations(), m_ShaderStageAllocations(0)
+	{
+		for(int i = MAX_RESOURCE_BINDINGS-1; i >= 0; i --)
+			m_FreeSlots.push_back(i);
+	}
+
+	enum BindType
+	{
+		ConstantBuffer = 0,
+		RWBuffer,
+		Texture,
+		UAV
+	};
+
+	uint32_t GetBindingSlot(uint32_t regNo, BindType type)
+	{
+		// The key is regNumber with the bindtype stored to highest 16 bits
+		uint32_t key = (m_ShaderStageAllocations + regNo) | (uint32_t(type) << 16);
+		SlotMap::iterator itr = m_Allocations.find(key);
+		if(itr == m_Allocations.end())
+		{
+			uint32_t slot = m_FreeSlots.back();
+			m_FreeSlots.pop_back();
+			m_Allocations.insert(std::make_pair(key, slot));
+			return slot;
+		}
+		return itr->second;
+	}
+
+	// Func for reserving binding slots with the original reg number.
+	// Used for fragment shader UAVs (SetRandomWriteTarget etc).
+	void ReserveBindingSlot(uint32_t regNo, BindType type)
+	{
+		uint32_t key = regNo | (uint32_t(type) << 16);
+		m_Allocations.insert(std::make_pair(key, regNo));
+
+		// Remove regNo from free slots
+		for (int i = m_FreeSlots.size() - 1; i >= 0; i--)
+		{
+			if (m_FreeSlots[i] == regNo)
+			{
+				m_FreeSlots.erase(m_FreeSlots.begin() + i);
+				return;
+			}
+		}
+	}
+
+	uint32_t SaveTotalShaderStageAllocationsCount()
+	{
+		m_ShaderStageAllocations = m_Allocations.size();
+		return m_ShaderStageAllocations;
+	}
+
+private:
+	std::vector<uint32_t> m_FreeSlots;
+};
 
 //The shader stages (Vertex, Pixel et al) do not depend on each other
 //in HLSL. GLSL is a different story. HLSLCrossCompiler requires
@@ -207,6 +291,10 @@ public:
 	GLSLCrossDependencyData()
 		: eTessPartitioning(),
 		eTessOutPrim(),
+		fMaxTessFactor(64.0),
+		numPatchesInThreadGroup(0),
+		hasControlPoint(false),
+		hasPatchConstant(false),
 		ui32ProgramStages(0),
 		m_ExtBlendModes(),
 		m_NextSpecID(0)
@@ -290,6 +378,10 @@ public:
     //can be saved when compiling hull and passed to domain compilation.
     TESSELLATOR_PARTITIONING eTessPartitioning;
     TESSELLATOR_OUTPUT_PRIMITIVE eTessOutPrim;
+    float fMaxTessFactor;
+    int numPatchesInThreadGroup;
+    bool hasControlPoint;
+    bool hasPatchConstant;
 
 	// Bitfield for the shader stages this program is going to include (see PS_FLAG_*).
 	// Needed so we can construct proper shader input and output names
@@ -313,6 +405,28 @@ public:
 		pixelInterpolation[regNo] = mode;
 	}
 
+	struct CompareFirst
+	{
+		CompareFirst(std::string val) : m_Val (val) {}
+		bool operator()(const std::pair<std::string, std::string>& elem) const
+		{
+			return m_Val == elem.first;
+		}
+		private:
+		std::string m_Val;
+	};
+
+	inline bool IsMemberDeclared(const std::string &name)
+	{
+		if (std::find_if(m_SharedFunctionMembers.begin(), m_SharedFunctionMembers.end(), CompareFirst(name)) != m_SharedFunctionMembers.end())
+			return true;
+		return false;
+	}
+
+	MemberDefinitions m_SharedFunctionMembers;
+	BindingSlotAllocator m_SharedTextureSlots, m_SharedSamplerSlots;
+	BindingSlotAllocator m_SharedBufferSlots;
+
 	inline void ClearCrossDependencyData()
 	{
 		pixelInterpolation.clear();
@@ -321,8 +435,9 @@ public:
 			varyingLocationsMap[i].clear();
 			nextAvailableVaryingLocation[i] = 0;
 		}
-		m_NextSpecID = 0;
+		m_NextSpecID = kArraySizeConstantID + 1;
 		m_SpecConstantMap.clear();
+		m_SharedFunctionMembers.clear();
 	}
 
 	// Retrieve or allocate a layout slot for Vulkan specialization constant
@@ -368,9 +483,11 @@ public:
 	virtual bool OnConstant(const std::string &name, int bindIndex, SHADER_VARIABLE_TYPE cType, int rows, int cols, bool isMatrix, int arraySize) { return true; }
 
 	virtual void OnConstantBufferBinding(const std::string &name, int bindIndex) {}
-	virtual void OnTextureBinding(const std::string &name, int bindIndex, int samplerIndex, HLSLCC_TEX_DIMENSION dim, bool isUAV) {}
+	virtual void OnTextureBinding(const std::string &name, int bindIndex, int samplerIndex, bool multisampled, HLSLCC_TEX_DIMENSION dim, bool isUAV) {}
 	virtual void OnBufferBinding(const std::string &name, int bindIndex, bool isUAV) {}
 	virtual void OnThreadGroupSize(unsigned int xSize, unsigned int ySize, unsigned int zSize) {}
+	virtual void OnTessellationInfo(uint32_t tessPartitionMode, uint32_t tessOutputWindingOrder, uint32_t tessMaxFactor, uint32_t tessNumPatchesInThreadGroup) {}
+	virtual void OnTessellationKernelInfo(uint32_t patchKernelBufferCount) {}
 };
 
 
@@ -459,6 +576,12 @@ static const unsigned int HLSLCC_FLAG_NVN_TARGET = 0x800000;
 // If set, generate an instance name for constant buffers. GLSL specs 4.5 disallows uniform variables from different constant buffers sharing the same name
 // as long as they are part of the same final linked program. Uniform buffer instance names solve this cross-shader symbol conflict issue.
 static const unsigned int HLSLCC_FLAG_UNIFORM_BUFFER_OBJECT_WITH_INSTANCE_NAME = 0x1000000;
+
+// Massage shader steps into Metal compute kernel from vertex/hull shaders + post-tessellation vertex shader from domain shader
+static const unsigned int HLSLCC_FLAG_METAL_TESSELLATION = 0x2000000;
+
+// Disable fastmath
+static const unsigned int HLSLCC_FLAG_DISABLE_FASTMATH = 0x4000000;
 
 #ifdef __cplusplus
 extern "C" {

@@ -246,7 +246,7 @@ void ToMetal::AddComparison(Instruction* psInst, ComparisonType eType,
 		glsl << TranslateOperand(&psInst->asOperands[2], typeFlag, destMask);
 		if (!isBoolDest)
 		{
-			bcatcstr(glsl, ") ? 0xFFFFFFFFu : 0u"); 
+			bcatcstr(glsl, ") ? 0xFFFFFFFFu : 0u");
 		}
 		AddAssignPrologue(needsParenthesis);
 	}
@@ -361,6 +361,25 @@ void ToMetal::AddMOVCBinaryOp(const Operand *pDest, const Operand *src0, Operand
 		// TODO: We can actually do this in one op using mix().
 		int srcElem = -1;
 		SHADER_VARIABLE_TYPE s0Type = src0->GetDataType(psContext);
+		
+		// Use an extra temp if dest is also one of the sources. Without this some swizzle combinations
+		// might alter the source before all components are handled.
+		const char* tempName = "hlslcc_movcTemp";
+        bool dstIsSrc1 = (pDest->eType == src1->eType) && (pDest->ui32RegisterNumber == src1->ui32RegisterNumber);
+        bool dstIsSrc2 = (pDest->eType == src2->eType) && (pDest->ui32RegisterNumber == src2->ui32RegisterNumber);
+		
+		if (dstIsSrc1 || dstIsSrc2)
+		{
+			psContext->AddIndentation();
+			bcatcstr(glsl, "{\n");
+			++psContext->indent;
+			psContext->AddIndentation();
+            int numComponents = (pDest->eType == OPERAND_TYPE_TEMP) ?
+                psContext->psShader->GetTempComponentCount(eDestType, pDest->ui32RegisterNumber) :
+                pDest->iNumComponents;
+			bformata(glsl, "%s %s = %s;\n", HLSLcc::GetConstructorForType(psContext, eDestType, numComponents), tempName, TranslateOperand(pDest, TO_FLAG_NAME_ONLY).c_str());
+		}
+		
 		for (destElem = 0; destElem < 4; ++destElem)
 		{
 			int numParenthesis = 0;
@@ -391,11 +410,26 @@ void ToMetal::AddMOVCBinaryOp(const Operand *pDest, const Operand *src0, Operand
 				}
 			}
 
-			glsl << TranslateOperand(src1, SVTTypeToFlag(eDestType), 1 << srcElem);
+			if (!dstIsSrc1)
+				glsl << TranslateOperand(src1, SVTTypeToFlag(eDestType), 1 << srcElem);
+			else
+				bformata(glsl, "%s%s", tempName, TranslateOperandSwizzle(src1, 1 << srcElem, 0).c_str());
+			
 			bcatcstr(glsl, " : ");
-			glsl << TranslateOperand(src2, SVTTypeToFlag(eDestType), 1 << srcElem);
+			
+			if (!dstIsSrc2)
+				glsl << TranslateOperand(src2, SVTTypeToFlag(eDestType), 1 << srcElem);
+			else
+				bformata(glsl, "%s%s", tempName, TranslateOperandSwizzle(src2, 1 << srcElem, 0).c_str());
 
 			AddAssignPrologue(numParenthesis);
+		}
+		
+		if (dstIsSrc1 || dstIsSrc2)
+		{
+			--psContext->indent;
+			psContext->AddIndentation();
+			bcatcstr(glsl, "}\n");
 		}
 	}
 }
@@ -484,9 +518,8 @@ void ToMetal::CallTernaryOp(const char* op1, const char* op2, Instruction* psIns
 }
 
 void ToMetal::CallHelper3(const char* name, Instruction* psInst,
-	int dest, int src0, int src1, int src2, int paramsShouldFollowWriteMask)
+	int dest, int src0, int src1, int src2, int paramsShouldFollowWriteMask, uint32_t ui32Flags)
 {
-	uint32_t ui32Flags = TO_AUTO_BITCAST_TO_FLOAT;
 	bstring glsl = *psContext->currentGLSLString;
 	uint32_t destMask = paramsShouldFollowWriteMask ? psInst->asOperands[dest].GetAccessMask() : OPERAND_4_COMPONENT_MASK_ALL;
 	uint32_t src2SwizCount = psInst->asOperands[src2].GetNumSwizzleElements(destMask);
@@ -519,6 +552,12 @@ void ToMetal::CallHelper3(const char* name, Instruction* psInst,
 	bcatcstr(glsl, ", ");
 	glsl << TranslateOperand(&psInst->asOperands[src2], ui32Flags, destMask);
 	AddAssignPrologue(numParenthesis);
+}
+
+void ToMetal::CallHelper3(const char* name, Instruction* psInst,
+	int dest, int src0, int src1, int src2, int paramsShouldFollowWriteMask)
+{
+	CallHelper3(name, psInst, dest, src0, src1, src2, paramsShouldFollowWriteMask, TO_AUTO_BITCAST_TO_FLOAT);
 }
 
 void ToMetal::CallHelper2(const char* name, Instruction* psInst,
@@ -850,9 +889,9 @@ void ToMetal::TranslateTexCoord(
 		opMask = OPERAND_4_COMPONENT_MASK_X;
 		bstring glsl = *psContext->currentGLSLString;
 		glsl << TranslateOperand(psTexCoordOperand, flags, opMask);
-		
+
 		bcatcstr(glsl, ", round(");
-		
+
 		opMask = OPERAND_4_COMPONENT_MASK_Y;
 		flags = TO_AUTO_BITCAST_TO_FLOAT;
 		isArray = true;
@@ -878,10 +917,10 @@ void ToMetal::TranslateTexCoord(
 		// xy for coord, z for array element
 		opMask = OPERAND_4_COMPONENT_MASK_X | OPERAND_4_COMPONENT_MASK_Y;
 		flags |= TO_AUTO_EXPAND_TO_VEC2;
-		
+
 		bstring glsl = *psContext->currentGLSLString;
 		glsl << TranslateOperand(psTexCoordOperand, flags, opMask);
-		
+
 		bcatcstr(glsl, ", round(");
 
 		opMask = OPERAND_4_COMPONENT_MASK_Z;
@@ -894,12 +933,12 @@ void ToMetal::TranslateTexCoord(
 		// xyz for coord, w for array element
 		opMask = OPERAND_4_COMPONENT_MASK_X | OPERAND_4_COMPONENT_MASK_Y | OPERAND_4_COMPONENT_MASK_Z;
 		flags |= TO_AUTO_EXPAND_TO_VEC3;
-		
+
 		bstring glsl = *psContext->currentGLSLString;
 		glsl << TranslateOperand(psTexCoordOperand, flags, opMask);
-		
+
 		bcatcstr(glsl, ", round(");
-		
+
 		opMask = OPERAND_4_COMPONENT_MASK_W;
 		flags = TO_AUTO_BITCAST_TO_FLOAT;
 		isArray = true;
@@ -915,7 +954,7 @@ void ToMetal::TranslateTexCoord(
 	//FIXME detect when integer coords are needed.
 	bstring glsl = *psContext->currentGLSLString;
 	glsl << TranslateOperand(psTexCoordOperand, flags, opMask);
-	
+
 	if (isArray)
 		bcatcstr(glsl, ")");
 
@@ -948,7 +987,7 @@ void ToMetal::GetResInfoData(Instruction* psInst, int index, int destElem)
 			bcatcstr(glsl, "1.0f / float(");
 			numParenthesis++;
 		}
-		glsl << TranslateOperand(&psInst->asOperands[2], TO_FLAG_NONE);
+		glsl << TranslateOperand(&psInst->asOperands[2], TO_FLAG_NAME_ONLY);
 		if ((index == 1 && psInst->eResDim == RESOURCE_DIMENSION_TEXTURE1DARRAY) ||
 			(index == 2 && (psInst->eResDim == RESOURCE_DIMENSION_TEXTURE2DARRAY ||
 				psInst->eResDim == RESOURCE_DIMENSION_TEXTURE2DMSARRAY)))
@@ -958,13 +997,13 @@ void ToMetal::GetResInfoData(Instruction* psInst, int index, int destElem)
 		else
 		{
 			bcatcstr(glsl, metalGetters[index]);
-			
+
 			if (index < 3)
 			{
 				if (psInst->eResDim != RESOURCE_DIMENSION_TEXTURE2DMS &&
 					psInst->eResDim != RESOURCE_DIMENSION_TEXTURE2DMSARRAY)
 					glsl << TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER); //mip level
-			
+
 				bcatcstr(glsl, ")");
 			}
 		}
@@ -1073,12 +1112,22 @@ void ToMetal::TranslateTextureSample(Instruction* psInst,
 	SHADER_VARIABLE_TYPE dataType = psContext->psShader->sInfo.GetTextureDataType(psSrcTex->ui32RegisterNumber);
 	psContext->AddIndentation();
 	AddAssignToDest(psDest, dataType, psSrcTex->GetNumSwizzleElements(), &numParenthesis);
-		
+
 	std::string texName = TranslateOperand(psSrcTex, TO_FLAG_NAME_ONLY);
 
 	// TextureName.FuncName(
 	glsl << texName;
 	bformata(glsl, ".%s(", funcName);
+
+	bool isDepthSampler = false;
+	for(unsigned j = 0, m = m_Textures.size() ; j < m ; ++j)
+	{
+		if(m_Textures[j].name == texName)
+		{
+			isDepthSampler = m_Textures[j].isDepthSampler;
+			break;
+		}
+	}
 
 	// Sampler name
 	//TODO: Is it ok to use fixed shadow sampler in all cases of depth compare or would we need more
@@ -1143,8 +1192,8 @@ void ToMetal::TranslateTextureSample(Instruction* psInst,
 	}
 
 	bool hadOffset = false;
-	
-	// Add offset param 
+
+	// Add offset param
 	if (psInst->bAddressOffset)
 	{
 		hadOffset = true;
@@ -1178,7 +1227,7 @@ void ToMetal::TranslateTextureSample(Instruction* psInst,
             mask |= OPERAND_4_COMPONENT_MASK_Y;
         if (ui32NumOffsets > 2)
             mask |= OPERAND_4_COMPONENT_MASK_Z;
-        
+
 		bcatcstr(glsl, ",");
 		glsl << TranslateOperand(psSrcOff, TO_FLAG_INTEGER, mask);
 	}
@@ -1191,7 +1240,7 @@ void ToMetal::TranslateTextureSample(Instruction* psInst,
         {
             if (!(ui32Flags & TEXSMP_FLAG_DEPTHCOMPARE))
             {
-				// Need to add offset param to match func overload 
+				// Need to add offset param to match func overload
 				if (!hadOffset)
 				{
 					if (ui32NumOffsets == 1)
@@ -1199,7 +1248,7 @@ void ToMetal::TranslateTextureSample(Instruction* psInst,
 					else
 						bformata(glsl, ", int%d(0)", ui32NumOffsets);
 				}
-				
+
                 bcatcstr(glsl, ", component::");
                 glsl << TranslateOperandSwizzle(psSrcSamp, OPERAND_4_COMPONENT_MASK_ALL, 0, false);
             }
@@ -1212,7 +1261,7 @@ void ToMetal::TranslateTextureSample(Instruction* psInst,
 
 	bcatcstr(glsl, ")");
 
-	if (!(ui32Flags & TEXSMP_FLAG_DEPTHCOMPARE) || (ui32Flags & TEXSMP_FLAG_GATHER))
+	if (!((ui32Flags & TEXSMP_FLAG_DEPTHCOMPARE) || isDepthSampler) || (ui32Flags & TEXSMP_FLAG_GATHER))
 	{
 		// iWriteMaskEnabled is forced off during DecodeOperand because swizzle on sampler uniforms
 		// does not make sense. But need to re-enable to correctly swizzle this particular instruction.
@@ -1232,7 +1281,7 @@ void ToMetal::TranslateDynamicComponentSelection(const ShaderVarType* psVarType,
 	bstring glsl = *psContext->currentGLSLString;
 	ASSERT(psVarType->Class == SVC_VECTOR);
 
-	bcatcstr(glsl, "["); // Access vector component with [] notation 
+	bcatcstr(glsl, "["); // Access vector component with [] notation
 	if (offset > 0)
 		bcatcstr(glsl, "(");
 
@@ -1290,7 +1339,7 @@ void ToMetal::TranslateShaderStorageStore(Instruction* psInst)
 		{
 			psContext->AddIndentation();
 			glsl << TranslateOperand(psDest, TO_FLAG_DESTINATION | TO_FLAG_NAME_ONLY);
-			
+
 			if (psDestAddr)
 			{
 				bcatcstr(glsl, "[");
@@ -1427,7 +1476,7 @@ void ToMetal::TranslateShaderStorageLoad(Instruction* psInst)
 				bcatcstr(glsl, "u");
 		}
 		bcatcstr(glsl, "]");
-		
+
 		if (addedBitcast)
 			bcatcstr(glsl, ")");
 	}
@@ -1780,7 +1829,7 @@ void ToMetal::TranslateAtomicMemOp(Instruction* psInst)
 	glsl << TranslateOperand(dest, TO_FLAG_DESTINATION | TO_FLAG_NAME_ONLY);
 	bcatcstr(glsl, "[");
 	glsl << TranslateOperand(destAddr, destAddrFlag, OPERAND_4_COMPONENT_MASK_X);
-	
+
 	if (!psBinding || psBinding->eType != RTYPE_UAV_RWTYPED)
 	{
 		// Structured buf if we have both x & y swizzles. Raw buf has only x -> no .value[]
@@ -2026,7 +2075,7 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
 		psContext->AddIndentation();
 		bcatcstr(glsl, "//MAD\n");
 #endif
-		CallTernaryOp("*", "+", psInst, 0, 1, 2, 3, TO_FLAG_NONE);
+		CallHelper3("fma", psInst, 0, 1, 2, 3, 1);
 		break;
 	}
 	case OPCODE_IMAD:
@@ -2043,6 +2092,16 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
 		}
 
 		CallTernaryOp("*", "+", psInst, 0, 1, 2, 3, ui32Flags);
+		break;
+	}
+	case OPCODE_DFMA:
+	{
+		uint32_t ui32Flags = TO_FLAG_DOUBLE;
+#ifdef _DEBUG
+		psContext->AddIndentation();
+		bcatcstr(glsl, "//DFMA\n");
+#endif
+		CallHelper3("fma", psInst, 0, 1, 2, 3, 1, ui32Flags);
 		break;
 	}
 	case OPCODE_DADD:
@@ -2992,24 +3051,27 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
 		psContext->AddIndentation();
 		bcatcstr(glsl, "//SYNC\n");
 #endif
-		const char *barrierFlags = "mem_none";
-		if (ui32SyncFlags & SYNC_THREAD_GROUP_SHARED_MEMORY)
-		{
-			barrierFlags = "mem_threadgroup";
-		}
-		if (ui32SyncFlags & (SYNC_UNORDERED_ACCESS_VIEW_MEMORY_GROUP | SYNC_UNORDERED_ACCESS_VIEW_MEMORY_GLOBAL))
-		{
-			barrierFlags = "mem_device";
-			if (ui32SyncFlags & SYNC_THREAD_GROUP_SHARED_MEMORY)
-			{
-				barrierFlags = "mem_device_and_threadgroup";
-			}
-		}
-		psContext->AddIndentation();
+		const bool sync_threadgroup = (ui32SyncFlags & SYNC_THREAD_GROUP_SHARED_MEMORY) != 0;
+		const bool sync_device = (ui32SyncFlags & (SYNC_UNORDERED_ACCESS_VIEW_MEMORY_GROUP | SYNC_UNORDERED_ACCESS_VIEW_MEMORY_GLOBAL)) != 0;
+
+		const char* barrierFlags = "mem_flags::mem_none";
+		if(sync_threadgroup && sync_device) barrierFlags = "mem_flags::mem_threadgroup | mem_flags::mem_device";
+		else if(sync_threadgroup)			barrierFlags = "mem_flags::mem_threadgroup";
+		else if(sync_device)				barrierFlags = "mem_flags::mem_device";
+
 		if (ui32SyncFlags & SYNC_THREADS_IN_GROUP)
-			bformata(glsl, "threadgroup_barrier(mem_flags::%s);\n", barrierFlags);
+		{
+			psContext->AddIndentation();
+			bformata(glsl, "threadgroup_barrier(%s);\n", barrierFlags);
+		}
 		else
-			bformata(glsl, "simdgroup_barrier(mem_flags::%s);\n", barrierFlags);
+		{
+			psContext->AddIndentation(); bformata(glsl, "#if __HAVE_SIMDGROUP_BARRIER__\n");
+			psContext->AddIndentation(); bformata(glsl, "simdgroup_barrier(%s);\n", barrierFlags);
+			psContext->AddIndentation(); bformata(glsl, "#else\n");
+			psContext->AddIndentation(); bformata(glsl, "threadgroup_barrier(%s);\n", barrierFlags);
+			psContext->AddIndentation(); bformata(glsl, "#endif\n");
+		}
 
 		break;
 	}
@@ -3107,7 +3169,7 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
 #endif
 
 		psContext->psShader->sInfo.GetResourceFromBindingPoint(RGROUP_TEXTURE, psInst->asOperands[2].ui32RegisterNumber, &psBinding);
-        
+
         if (psInst->eResDim == RESOURCE_DIMENSION_BUFFER) // Hack typed buffer as raw buf
 		{
             psInst->eOpcode = OPCODE_LD_UAV_TYPED;
@@ -3586,75 +3648,53 @@ template <int N> vec<int, N> bitFieldExtractI(const vec<uint, N> width, const ve
 	}
 	case OPCODE_F32TOF16:
 	{
-		// TODO Metallize
-		ASSERT(0); // Are these even used?
-							const uint32_t destElemCount = psInst->asOperands[0].GetNumSwizzleElements();
-							const uint32_t s0ElemCount = psInst->asOperands[1].GetNumSwizzleElements();
-							uint32_t destElem;
+		uint32_t writeMask = psInst->asOperands[0].GetAccessMask();
+
 #ifdef _DEBUG
-							psContext->AddIndentation();
-							bcatcstr(glsl, "//F32TOF16\n");
+		psContext->AddIndentation();
+		bcatcstr(glsl, "//F32TOF16\n");
 #endif
-							for (destElem = 0; destElem < destElemCount; ++destElem)
-							{
-								const char* swizzle[] = { ".x", ".y", ".z", ".w" };
 
-								//unpackHalf2x16 converts two f16s packed into uint to two f32s.
+		for (int i = 0; i < 4; i++)
+		{
+			if ((writeMask & (1 << i)) == 0)
+				continue;
+			psContext->AddIndentation();
+			psInst->asOperands[0].ui32CompMask = (1 << i);
+			psInst->asOperands[0].eSelMode = OPERAND_4_COMPONENT_MASK_MODE;
+			AddAssignToDest(&psInst->asOperands[0], SVT_UINT, 1, &numParenthesis);
 
-								//dest.swiz.x = unpackHalf2x16(src.swiz.x).x
-								//dest.swiz.y = unpackHalf2x16(src.swiz.y).x
-								//dest.swiz.z = unpackHalf2x16(src.swiz.z).x
-								//dest.swiz.w = unpackHalf2x16(src.swiz.w).x
-
-								psContext->AddIndentation();
-								glsl << TranslateOperand(&psInst->asOperands[0], TO_FLAG_DESTINATION);
-								if (destElemCount > 1)
-									bcatcstr(glsl, swizzle[destElem]);
-
-								bcatcstr(glsl, " = unpackHalf2x16(");
-								glsl << TranslateOperand(&psInst->asOperands[1], TO_FLAG_UNSIGNED_INTEGER);
-								if (s0ElemCount > 1)
-									bcatcstr(glsl, swizzle[destElem]);
-								bcatcstr(glsl, ").x;\n");
-
-							}
-							break;
+			bcatcstr(glsl, "as_type<uint>(half2(");
+			glsl << TranslateOperand(&psInst->asOperands[1], TO_FLAG_NONE, (1 << i));
+			bcatcstr(glsl, ", 0.0))");
+			AddAssignPrologue(numParenthesis);
+		}
+		break;
 	}
 	case OPCODE_F16TOF32:
 	{
-		// TODO metallize
-		ASSERT(0); // Are these even used?
-							const uint32_t destElemCount = psInst->asOperands[0].GetNumSwizzleElements();
-							const uint32_t s0ElemCount = psInst->asOperands[1].GetNumSwizzleElements();
-							uint32_t destElem;
+		uint32_t writeMask = psInst->asOperands[0].GetAccessMask();
+
 #ifdef _DEBUG
-							psContext->AddIndentation();
-							bcatcstr(glsl, "//F16TOF32\n");
+		psContext->AddIndentation();
+		bcatcstr(glsl, "//F16TOF32\n");
 #endif
-							for (destElem = 0; destElem < destElemCount; ++destElem)
-							{
-								const char* swizzle[] = { ".x", ".y", ".z", ".w" };
 
-								//packHalf2x16 converts two f32s to two f16s packed into a uint.
+		for (int i = 0; i < 4; i++)
+		{
+			if ((writeMask & (1 << i)) == 0)
+				continue;
+			psContext->AddIndentation();
+			psInst->asOperands[0].ui32CompMask = (1 << i);
+			psInst->asOperands[0].eSelMode = OPERAND_4_COMPONENT_MASK_MODE;
+			AddAssignToDest(&psInst->asOperands[0], SVT_FLOAT, 1, &numParenthesis);
 
-								//dest.swiz.x = packHalf2x16(vec2(src.swiz.x)) & 0xFFFF
-								//dest.swiz.y = packHalf2x16(vec2(src.swiz.y)) & 0xFFFF
-								//dest.swiz.z = packHalf2x16(vec2(src.swiz.z)) & 0xFFFF
-								//dest.swiz.w = packHalf2x16(vec2(src.swiz.w)) & 0xFFFF
-
-								psContext->AddIndentation();
-								glsl << TranslateOperand(&psInst->asOperands[0], TO_FLAG_DESTINATION | TO_FLAG_UNSIGNED_INTEGER);
-								if (destElemCount > 1)
-									bcatcstr(glsl, swizzle[destElem]);
-
-								bcatcstr(glsl, " = packHalf2x16(vec2(");
-								glsl << TranslateOperand(&psInst->asOperands[1], TO_FLAG_NONE);
-								if (s0ElemCount > 1)
-									bcatcstr(glsl, swizzle[destElem]);
-								bcatcstr(glsl, ")) & 0xFFFF;\n");
-
-							}
-							break;
+			bcatcstr(glsl, "as_type<half2>(");
+			glsl << TranslateOperand(&psInst->asOperands[1], TO_AUTO_BITCAST_TO_UINT, (1 << i));
+			bcatcstr(glsl, ").x");
+			AddAssignPrologue(numParenthesis);
+		}
+		break;
 	}
 	case OPCODE_INEG:
 	{
@@ -3783,7 +3823,7 @@ template <int N> vec<int, N> bitFieldExtractI(const vec<uint, N> width, const ve
 	{
 #ifdef _DEBUG
 		psContext->AddIndentation();
-		bcatcstr(glsl, "//INOT\n");
+		bcatcstr(glsl, "//NOT\n");
 #endif
 		psContext->AddIndentation();
 		AddAssignToDest(&psInst->asOperands[0], SVT_INT, psInst->asOperands[1].GetNumSwizzleElements(), &numParenthesis);
@@ -3830,7 +3870,7 @@ template <int N> vec<int, N> bitFieldExtractI(const vec<uint, N> width, const ve
 		psContext->m_Reflection.OnDiagnostics("Metal shading language does not support buffer size query from shader. Pass the size to shader as const instead.\n", 0, false); // TODO: change this into error after modifying gfx-test 450
 		break;
 	}
-			
+
 	case OPCODE_SAMPLE_INFO:
 	{
 #ifdef _DEBUG
@@ -3858,7 +3898,6 @@ template <int N> vec<int, N> bitFieldExtractI(const vec<uint, N> width, const ve
 	case OPCODE_DTOF:
 	case OPCODE_FTOD:
 	case OPCODE_DDIV:
-	case OPCODE_DFMA:
 	case OPCODE_DRCP:
 	case OPCODE_MSAD:
 	case OPCODE_DTOI:

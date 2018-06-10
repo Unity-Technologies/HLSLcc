@@ -5,7 +5,6 @@
 #include "internal_includes/Shader.h"
 #include "internal_includes/HLSLCrossCompilerContext.h"
 #include "internal_includes/Instruction.h"
-#include <algorithm>
 
 uint32_t Operand::GetAccessMask() const
 {
@@ -337,8 +336,11 @@ SHADER_VARIABLE_TYPE Operand::GetDataType(HLSLCrossCompilerContext* psContext, S
 		if (regSpace == 0)
 			psContext->psShader->sInfo.GetOutputSignatureFromRegister(ui32Register, GetAccessMask(), psContext->psShader->ui32CurrentVertexOutputStream,
 			&psOut);
-		else
-			psContext->psShader->sInfo.GetPatchConstantSignatureFromRegister(ui32Register, GetAccessMask(), &psOut);
+		else {
+			psContext->psShader->sInfo.GetPatchConstantSignatureFromRegister(ui32Register, GetAccessMask(), &psOut, true);
+			if (!psOut)
+				return SVT_FLOAT;
+		}
 
 		ASSERT(psOut != NULL);
 		if (psOut->eMinPrec != MIN_PRECISION_DEFAULT)
@@ -403,7 +405,6 @@ SHADER_VARIABLE_TYPE Operand::GetDataType(HLSLCrossCompilerContext* psContext, S
 		case NAME_RENDER_TARGET_ARRAY_INDEX:
 		case NAME_VIEWPORT_ARRAY_INDEX:
 		case NAME_SAMPLE_INDEX:
-
 			return SVT_INT;
 
 		case NAME_IS_FRONT_FACE:
@@ -411,6 +412,7 @@ SHADER_VARIABLE_TYPE Operand::GetDataType(HLSLCrossCompilerContext* psContext, S
 
 		case NAME_POSITION:
 		case NAME_CLIP_DISTANCE:
+		case NAME_CULL_DISTANCE:
 			return SVT_FLOAT;
 
 		default:
@@ -528,8 +530,12 @@ SHADER_VARIABLE_TYPE Operand::GetDataType(HLSLCrossCompilerContext* psContext, S
 	{
 		return SVT_INT;
 	}
+	case OPERAND_TYPE_IMMEDIATE_CONSTANT_BUFFER: // constant array is floats everywhere except on vulkan
+	{
+		return psContext->IsVulkan() ? SVT_UINT : SVT_FLOAT;
+	}
+
 	case OPERAND_TYPE_INDEXABLE_TEMP: // Indexable temps are always floats
-	case OPERAND_TYPE_IMMEDIATE_CONSTANT_BUFFER: // So are const arrays currently
 	default:
 	{
 		return SVT_FLOAT;
@@ -619,7 +625,9 @@ Operand* Operand::GetDynamicIndexOperand(HLSLCrossCompilerContext *psContext, co
         }
         else if (psDynIndexOrigin->eOpcode == OPCODE_ISHL)
         {
-            if (asOps[2].eType == OPERAND_TYPE_IMMEDIATE32)
+            if (asOps[2].eType == OPERAND_TYPE_IMMEDIATE32 && asOps[1].eSelMode == OPERAND_4_COMPONENT_SWIZZLE_MODE)
+                psOriginOp = &asOps[0];
+            else if (asOps[2].eType == OPERAND_TYPE_IMMEDIATE32)
                 psOriginOp = &asOps[1];
         }
 
@@ -632,7 +640,7 @@ Operand* Operand::GetDynamicIndexOperand(HLSLCrossCompilerContext *psContext, co
             // -> we can use src straight and no index revert calc is needed
             if ((psOriginOp->eType == OPERAND_TYPE_INPUT)
                 || ((psOriginOp->ui32RegisterNumber != psDynIndexOp->ui32RegisterNumber || psOriginOp->GetDataType(psContext) != psDynIndexOp->GetDataType(psContext))
-                    && psOriginOp->m_Defines[0].m_Inst->m_Uses.size() == 1))
+                    && (!psOriginOp->m_Defines.empty()) && psOriginOp->m_Defines[0].m_Inst->m_Uses.size() == 1))
             {
                 psDynIndexOp = psOriginOp;
                 *needsIndexCalcRevert = false;

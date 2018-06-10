@@ -6,6 +6,7 @@
 #include <string>
 #include "growing_array.h"
 #include <stdint.h>
+
 //Reflection
 #define MAX_RESOURCE_BINDINGS 256
 
@@ -108,6 +109,14 @@ enum TESSELLATOR_OUTPUT_PRIMITIVE
 	TESSELLATOR_OUTPUT_TRIANGLE_CW = 3,
 	TESSELLATOR_OUTPUT_TRIANGLE_CCW = 4
 };
+
+typedef enum TESSELLATOR_DOMAIN
+{
+	TESSELLATOR_DOMAIN_UNDEFINED = 0,
+	TESSELLATOR_DOMAIN_ISOLINE = 1,
+	TESSELLATOR_DOMAIN_TRI = 2,
+	TESSELLATOR_DOMAIN_QUAD = 3
+} TESSELLATOR_DOMAIN;
 
 enum SPECIAL_NAME
 {
@@ -232,6 +241,7 @@ struct ResourceBinding
 	RESOURCE_RETURN_TYPE ui32ReturnType;
 	uint32_t ui32NumSamples;
 	REFLECT_RESOURCE_PRECISION ePrecision;
+	int m_SamplerMode; // (SB_SAMPLER_MODE) For samplers, this is the sampler mode this sampler is declared with
 
 	SHADER_VARIABLE_TYPE GetDataType() const
 	{
@@ -462,7 +472,7 @@ public:
 		int32_t* pi32Rebase,
 		uint32_t flags);
 
-	static std::string GetShaderVarIndexedFullName(const ShaderVarType* psShaderVar, std::vector<uint32_t> &indices, const std::string dynamicIndex, bool revertDynamicIndexCalc, bool matrixAsVectors);
+	static std::string GetShaderVarIndexedFullName(const ShaderVarType* psShaderVar, const std::vector<uint32_t>& indices, const std::string& dynamicIndex, bool revertDynamicIndexCalc, bool matrixAsVectors);
 
 	// Apply shader precision information to resource bindings
 	void AddSamplerPrecisions(HLSLccSamplerPrecisionInfo &info);
@@ -491,5 +501,9 @@ public:
 
 	TESSELLATOR_PARTITIONING eTessPartitioning;
 	TESSELLATOR_OUTPUT_PRIMITIVE eTessOutPrim;
+	uint32_t ui32TessInputControlPointCount;
+	uint32_t ui32TessOutputControlPointCount;
+	TESSELLATOR_DOMAIN eTessDomain;
+	bool bEarlyFragmentTests;
 };
 

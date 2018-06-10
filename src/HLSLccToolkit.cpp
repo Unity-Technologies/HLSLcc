@@ -4,6 +4,8 @@
 #include "internal_includes/toGLSLOperand.h"
 #include "internal_includes/HLSLCrossCompilerContext.h"
 #include "internal_includes/Shader.h"
+#include "internal_includes/languages.h"
+#include "include/UnityInstancingFlexibleArraySize.h"
 #include <sstream>
 #include <cmath>
 
@@ -54,8 +56,7 @@ namespace HLSLcc
 		return SVT_FLOAT;
 	}
 
-	const char * GetConstructorForTypeGLSL(const SHADER_VARIABLE_TYPE eType,
-		const int components, bool useGLSLPrecision)
+	const char * GetConstructorForTypeGLSL(const HLSLCrossCompilerContext *context, const SHADER_VARIABLE_TYPE eType, const int components, bool useGLSLPrecision)
 	{
 		static const char * const uintTypes[] = { " ", "uint", "uvec2", "uvec3", "uvec4" };
 		static const char * const uint16Types[] = { " ", "mediump uint", "mediump uvec2", "mediump uvec3", "mediump uvec4" };
@@ -68,11 +69,12 @@ namespace HLSLcc
 		static const char * const boolTypes[] = { " ", "bool", "bvec2", "bvec3", "bvec4" };
 
 		ASSERT(components >= 1 && components <= 4);
+        bool emitLowp = EmitLowp(context);
 
 		switch (eType)
 		{
 		case SVT_UINT:
-			return uintTypes[components];
+			return HaveUnsignedTypes(context->psShader->eTargetLanguage) ? uintTypes[components] : intTypes[components];
 		case SVT_UINT16:
 			return useGLSLPrecision ? uint16Types[components] : uintTypes[components];
 		case SVT_INT:
@@ -80,13 +82,13 @@ namespace HLSLcc
 		case SVT_INT16:
 			return useGLSLPrecision ? int16Types[components] : intTypes[components];
 		case SVT_INT12:
-			return useGLSLPrecision ? int12Types[components] : intTypes[components];
+            return useGLSLPrecision ? (emitLowp ? int12Types[components] : int16Types[components]) : intTypes[components];
 		case SVT_FLOAT:
 			return floatTypes[components];
 		case SVT_FLOAT16:
 			return useGLSLPrecision ? float16Types[components] : floatTypes[components];
 		case SVT_FLOAT10:
-			return useGLSLPrecision ? float10Types[components] : floatTypes[components];
+            return useGLSLPrecision ? (emitLowp ? float10Types[components] : float16Types[components]) : floatTypes[components];
 		case SVT_BOOL:
 			return boolTypes[components];
 		default:
@@ -137,7 +139,7 @@ namespace HLSLcc
 		if (psContext->psShader->eTargetLanguage == LANG_METAL)
 			return GetConstructorForTypeMetal(eType, components);
 		else
-			return GetConstructorForTypeGLSL(eType, components, useGLSLPrecision);
+			return GetConstructorForTypeGLSL(psContext, eType, components, useGLSLPrecision);
 	}
 
 	std::string GetMatrixTypeName(const HLSLCrossCompilerContext *psContext, const SHADER_VARIABLE_TYPE eBaseType, const int columns, const int rows)
@@ -442,7 +444,7 @@ namespace HLSLcc
 	}
 
 	// Returns true if a direct constructor can convert src->dest
-	bool CanDoDirectCast(SHADER_VARIABLE_TYPE src, SHADER_VARIABLE_TYPE dest)
+	bool CanDoDirectCast(const HLSLCrossCompilerContext *context, SHADER_VARIABLE_TYPE src, SHADER_VARIABLE_TYPE dest)
 	{
 		// uint<->int<->bool conversions possible
 		if ((src == SVT_INT || src == SVT_UINT || src == SVT_BOOL || src == SVT_INT12 || src == SVT_INT16 || src == SVT_UINT16) &&
@@ -454,8 +456,22 @@ namespace HLSLcc
 			(dest == SVT_FLOAT || dest == SVT_DOUBLE || dest == SVT_FLOAT16 || dest == SVT_FLOAT10))
 			return true;
 
+		if (context->psShader->eTargetLanguage == LANG_METAL)
+		{
+			// avoid compiler error: cannot use as_type to cast from 'half' to 'unsigned int', types of different size
+			if ((src == SVT_FLOAT16 || src == SVT_FLOAT10) && (dest == SVT_UINT))
+				return true;
+		}
+
 		return false;
 	}
+
+    bool IsUnityFlexibleInstancingBuffer(const ConstantBuffer* psCBuf)
+    {
+        return psCBuf != NULL && psCBuf->asVars.size() == 1
+            && psCBuf->asVars[0].sType.Class == SVC_STRUCT && psCBuf->asVars[0].sType.Elements == 2
+            && IsUnityInstancingConstantBufferName(psCBuf->name.c_str());
+    }
 
 #ifndef fpcheck
 #ifdef _MSC_VER

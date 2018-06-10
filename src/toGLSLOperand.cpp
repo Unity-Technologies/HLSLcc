@@ -1,6 +1,7 @@
 #include "internal_includes/toGLSLOperand.h"
 #include "internal_includes/HLSLccToolkit.h"
 #include "internal_includes/HLSLCrossCompilerContext.h"
+#include "internal_includes/languages.h"
 #include "bstrlib.h"
 #include "hlslcc.h"
 #include "internal_includes/debug.h"
@@ -13,7 +14,6 @@
 
 #include <float.h>
 #include <stdlib.h>
-#include <algorithm>
 
 using namespace HLSLcc;
 
@@ -25,6 +25,8 @@ using namespace HLSLcc;
 #endif
 #endif // #ifndef fpcheck
 
+// In case we need to fake dynamic indexing
+static const char *squareBrackets[2][2] = { { "DynamicIndex(", ")" }, { "[", "]" } };
 
 // Returns nonzero if types are just different precisions of the same underlying type
 static bool AreTypesCompatible(SHADER_VARIABLE_TYPE a, uint32_t ui32TOFlag)
@@ -359,7 +361,7 @@ static void printImmediate32(HLSLCrossCompilerContext *psContext, uint32_t value
 	int needsParenthesis = 0;
 
 	// Print floats as bit patterns.
-	if ((eType == SVT_FLOAT || eType == SVT_FLOAT16 || eType == SVT_FLOAT10) && psContext->psShader->ui32MajorVersion > 3 && fpcheck(*((float *)(&value))))
+	if ((eType == SVT_FLOAT || eType == SVT_FLOAT16 || eType == SVT_FLOAT10) && psContext->psShader->ui32MajorVersion > 3 && HaveBitEncodingOps(psContext->psShader->eTargetLanguage) && fpcheck(*((float *)(&value))))
 	{
 		if (psContext->psShader->eTargetLanguage == LANG_METAL)
 			bcatcstr(glsl, "as_type<float>(");
@@ -376,9 +378,18 @@ static void printImmediate32(HLSLCrossCompilerContext *psContext, uint32_t value
 	case SVT_INT:
 	case SVT_INT16:
 	case SVT_INT12:
+		// Adreno bug (happens only on android 4.* GLES3) casting unsigned representation of negative values to signed int
+		// results in undefined value/fails to link shader, need to print as signed decimal
+		if (value > 0x7fffffff && psContext->psShader->eTargetLanguage == LANG_ES_300)
+			bformata(glsl, "%i", (int32_t)value);
 		// Need special handling for anything >= uint 0x3fffffff
-		if (value > 0x3ffffffe)
-			bformata(glsl, "int(0x%Xu)", value);
+		else if (value > 0x3ffffffe)
+		{
+			if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
+				bformata(glsl, "int(0x%Xu)", value);
+			else
+				bformata(glsl, "0x%X", value);
+		}
 		else if(value <= 1024) // Print anything below 1024 as decimal, and hex after that
 			bformata(glsl, "%d", value);
 		else
@@ -410,6 +421,77 @@ static void printImmediate32(HLSLCrossCompilerContext *psContext, uint32_t value
 void ToGLSL::TranslateVariableNameWithMask(const Operand* psOperand, uint32_t ui32TOFlag, uint32_t* pui32IgnoreSwizzle, uint32_t ui32CompMask, int *piRebase)
 {
 	TranslateVariableNameWithMask(*psContext->currentGLSLString, psOperand, ui32TOFlag, pui32IgnoreSwizzle, ui32CompMask, piRebase);
+}
+
+void ToGLSL::DeclareDynamicIndexWrapper(const struct ShaderVarType* psType)
+{
+	DeclareDynamicIndexWrapper(psType->name.c_str(), psType->Class, psType->Type, psType->Rows, psType->Columns, psType->Elements);
+}
+
+void ToGLSL::DeclareDynamicIndexWrapper(const char* psName, SHADER_VARIABLE_CLASS eClass, SHADER_VARIABLE_TYPE eType, uint32_t ui32Rows, uint32_t ui32Columns, uint32_t ui32Elements)
+{
+	bstring glsl = psContext->beforeMain;
+
+	const char* suffix = "DynamicIndex";
+	const uint32_t maxElemCount = 256;
+	uint32_t elemCount = ui32Elements;
+
+	if (m_FunctionDefinitions.find(psName) != m_FunctionDefinitions.end())
+		return;
+
+	// Add a simple define that one can search and replace on devices that support dynamic indexing the usual way
+	if (m_FunctionDefinitions.find(suffix) == m_FunctionDefinitions.end())
+	{
+		m_FunctionDefinitions.insert(std::make_pair(suffix, "#define UNITY_DYNAMIC_INDEX_ES2 0\n"));
+	}
+
+	bcatcstr(glsl, "\n");
+
+	if (eClass == SVC_STRUCT)
+	{
+		bformata(glsl, "%s_Type %s%s", psName, psName, suffix);
+	}
+	else if(eClass == SVC_MATRIX_COLUMNS || eClass == SVC_MATRIX_ROWS)
+	{
+		if (psContext->flags & HLSLCC_FLAG_TRANSLATE_MATRICES)
+		{
+			// Translate matrices into vec4 arrays
+			bformata(glsl, "%s " HLSLCC_TRANSLATE_MATRIX_FORMAT_STRING "%s%s", HLSLcc::GetConstructorForType(psContext, eType, 4), ui32Rows, ui32Columns, psName, suffix);
+			elemCount = (eClass == SVC_MATRIX_COLUMNS ? ui32Columns : ui32Rows);
+			if (ui32Elements > 1)
+			{
+				elemCount *= ui32Elements;
+			}
+		}
+		else
+		{
+			bformata(glsl, "%s %s%s", HLSLcc::GetMatrixTypeName(psContext, eType, ui32Columns, ui32Rows).c_str(), psName, suffix);
+		}
+	}
+	else if (eClass == SVC_VECTOR && ui32Columns > 1)
+	{
+		bformata(glsl, "%s %s%s", HLSLcc::GetConstructorForType(psContext, eType, ui32Columns), psName, suffix);
+	}
+	else if ((eClass == SVC_SCALAR) || (eClass == SVC_VECTOR && ui32Columns == 1))
+	{
+		bformata(glsl, "%s %s%s", HLSLcc::GetConstructorForType(psContext, eType, 1), psName, suffix);
+	}
+	bformata(glsl, "(int i){\n");
+	bcatcstr(glsl, "#if UNITY_DYNAMIC_INDEX_ES2\n");
+	bformata(glsl, "    return %s[i];\n", psName);
+	bcatcstr(glsl, "#else\n");
+	bformata(glsl, "#define d_ar %s\n", psName);
+	bformata(glsl, "    if (i <= 0) return d_ar[0];");
+
+	// Let's draw a line somewhere with this workaround
+	for (int i = 1; i < std::min(elemCount, maxElemCount); i++) {
+		bformata(glsl, " else if (i == %d) return d_ar[%d];", i, i);
+	}
+	bformata(glsl, "\n    return d_ar[0];\n");
+	bformata(glsl, "#undef d_ar\n");
+	bcatcstr(glsl, "#endif\n");
+	bformata(glsl, "}\n\n");
+	m_FunctionDefinitions.insert(std::make_pair(psName, ""));
 }
 
 void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperand, uint32_t ui32TOFlag, uint32_t* pui32IgnoreSwizzle, uint32_t ui32CompMask, int *piRebase)
@@ -498,7 +580,7 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
 
 		if (AreTypesCompatible(eType, ui32TOFlag) == 0)
 		{
-			if (CanDoDirectCast(eType, requestedType))
+			if (CanDoDirectCast(psContext, eType, requestedType) || !HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
 			{
 				bformata(glsl, "%s(", GetConstructorForType(psContext, requestedType, requestedComponents, false));
 				numParenthesis++;
@@ -635,8 +717,10 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
 								psContext->psShader->eShaderType == PIXEL_SHADER &&
 								psContext->flags & HLSLCC_FLAG_SHADER_FRAMEBUFFER_FETCH)
 							{
-								if(name == "vs_SV_Target0")
-									bcatcstr(glsl, "SV_Target0");
+								// With ES2, leave separate variable names for input
+								if (!WriteToFragData(psContext->psShader->eTargetLanguage) &&
+									name.size() == 13 && !strncmp(name.c_str(), "vs_SV_Target", 12))
+									bcatcstr(glsl, name.substr(3).c_str());
 								else
 									bcatcstr(glsl, name.c_str());
 							}
@@ -674,6 +758,13 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
 			break;
 		}
 		case OPERAND_TYPE_OUTPUT_DEPTH:
+			if (psContext->psShader->eTargetLanguage == LANG_ES_100 && !psContext->EnableExtension("GL_EXT_frag_depth"))
+			{
+				bcatcstr(psContext->extensions, "#ifdef GL_EXT_frag_depth\n");
+				bcatcstr(psContext->extensions, "#define gl_FragDepth gl_FragDepthEXT\n");
+				bcatcstr(psContext->extensions, "#endif\n");
+			}
+			// fall through
 		case OPERAND_TYPE_OUTPUT_DEPTH_GREATER_EQUAL:
 		case OPERAND_TYPE_OUTPUT_DEPTH_LESS_EQUAL:
 		{
@@ -819,6 +910,7 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
 			int32_t index = -1;
 			std::vector<uint32_t> arrayIndices;
 			bool isArray = false;
+			bool isSubpassMS = false;
 			psContext->psShader->sInfo.GetConstantBufferFromBindingPoint(RGROUP_CBUFFER, psOperand->aui32ArraySizes[0], &psCBuf);
 
 			switch(psContext->psShader->eShaderType)
@@ -947,7 +1039,7 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
                     if (eType != SVT_INT && eType != SVT_UINT)
                         opFlags = TO_AUTO_BITCAST_TO_INT;
 
-                    TranslateOperand(dynamicIndex, psDynIndexOp, opFlags);
+                    TranslateOperand(dynamicIndex, psDynIndexOp, opFlags, 0x1); // We only care about the first component
                 }
 
                 char *tmp = bstr2cstr(dynamicIndex, '\0');
@@ -965,6 +1057,10 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
 						std::string instanceName = UniformBufferInstanceName(psContext, psCBuf->name);
 						bformata(glsl, "%s.", instanceName.c_str());
 					}
+
+					// Special hack for MSAA subpass inputs: the index is actually the sample index, so do special handling later.
+					if (strncmp(fullName.c_str(), "subpassLoad", 11) == 0 && fullName[fullName.length() - 1] == ',')
+						isSubpassMS = true;
 
 					if (((psContext->flags & HLSLCC_FLAG_TRANSLATE_MATRICES) != 0) && ((psVarType->Class == SVC_MATRIX_ROWS) || (psVarType->Class == SVC_MATRIX_COLUMNS)))
 					{
@@ -1017,6 +1113,10 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
 						ShaderInfo::GetShaderVarFromOffset(psOperand->aui32ArraySizes[1], tmpSwizzle, psCBuf, &tmpVarType, &tmpIsArray, &tmpArrayIndices, &tmpRebase, psContext->flags);
 						std::string fullName = ShaderInfo::GetShaderVarIndexedFullName(tmpVarType, tmpArrayIndices, dynamicIndexStr, needsIndexCalcRevert, psContext->flags & HLSLCC_FLAG_TRANSLATE_MATRICES);
 
+						// Special hack for MSAA subpass inputs: the index is actually the sample index, so do special handling later.
+						if (strncmp(fullName.c_str(), "subpassLoad", 11) == 0 && fullName[fullName.length() - 1] == ',')
+							isSubpassMS = true;
+
 						if (tmpVarType->Class == SVC_SCALAR)
 						{
 							bformata(glsl, "%s%s", instanceNamePrefix.c_str(), fullName.c_str());
@@ -1056,15 +1156,23 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
                         else // hasImmediateStr
                             fullIndexOss << index;
 
+                        int squareBracketType = hasDynamicIndex ? HaveDynamicIndexing(psContext, psOperand) : 1;
+
+                        if (!squareBracketType)
+                            DeclareDynamicIndexWrapper(psVarType);
+
                         if (((psVarType->Class == SVC_MATRIX_COLUMNS) || (psVarType->Class == SVC_MATRIX_ROWS)) && (psVarType->Elements > 1) && ((psContext->flags & HLSLCC_FLAG_TRANSLATE_MATRICES) == 0))
                         {
                             // Special handling for old matrix arrays
-                            bformata(glsl, "[%s / 4]", fullIndexOss.str().c_str());
-                            bformata(glsl, "[%s %% 4]", fullIndexOss.str().c_str());
+                            bformata(glsl, "%%s / 4%s", squareBrackets[squareBracketType][0], fullIndexOss.str().c_str(), squareBrackets[squareBracketType][1]);
+                            bformata(glsl, "%s%s %% 4%s", squareBrackets[squareBracketType][0], fullIndexOss.str().c_str(), squareBrackets[squareBracketType][1]);
                         }
                         else // This path is atm the default
                         {
-                            bformata(glsl, "[%s]", fullIndexOss.str().c_str());
+							if(isSubpassMS)
+								bformata(glsl, "%s%s%s", " ", fullIndexOss.str().c_str(), ")");
+							else
+								bformata(glsl, "%s%s%s", squareBrackets[squareBracketType][0], fullIndexOss.str().c_str(), squareBrackets[squareBracketType][1]);
                         }
                     }
                 }
@@ -1155,15 +1263,25 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
 		}
 		case OPERAND_TYPE_IMMEDIATE_CONSTANT_BUFFER:
 		{
-			bformata(glsl, "ImmCB_%d_%d_%d", psContext->currentPhase, psOperand->ui32RegisterNumber, psOperand->m_Rebase);
-			if(psOperand->m_SubOperands[0].get())
+			if (psContext->IsVulkan())
 			{
-				bcatcstr(glsl, "["); //Indexes must be integral. Offset is already taken care of above.
-				TranslateOperand(psOperand->m_SubOperands[0].get(), TO_FLAG_INTEGER);
-				bcatcstr(glsl, "]");
+				bformata(glsl, "ImmCB_%d", psContext->currentPhase);
+				TranslateOperandIndex(psOperand, 0);
 			}
-			if (psOperand->m_Size == 1)
-				*pui32IgnoreSwizzle = 1;
+			else
+			{
+				int squareBracketType = HaveDynamicIndexing(psContext, psOperand);
+
+				bformata(glsl, "ImmCB_%d_%d_%d", psContext->currentPhase, psOperand->ui32RegisterNumber, psOperand->m_Rebase);
+				if (psOperand->m_SubOperands[0].get())
+				{
+					bformata(glsl, "%s", squareBrackets[squareBracketType][0]); //Indexes must be integral. Offset is already taken care of above.
+					TranslateOperand(psOperand->m_SubOperands[0].get(), TO_FLAG_INTEGER);
+					bformata(glsl, "%s", squareBrackets[squareBracketType][1]);
+				}
+				if (psOperand->m_Size == 1)
+					*pui32IgnoreSwizzle = 1;
+			}
 			break;
 		}
 		case OPERAND_TYPE_INPUT_DOMAIN_POINT:
@@ -1322,6 +1440,10 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
 				bcatcstr(glsl, "gl_ClipDistance");
 				*pui32IgnoreSwizzle = 1;
 				break;
+			case NAME_CULL_DISTANCE:
+				bcatcstr(glsl, "gl_CullDistance");
+				*pui32IgnoreSwizzle = 1;
+				break;
 			case NAME_VIEWPORT_ARRAY_INDEX:
 				bcatcstr(glsl, "gl_ViewportIndex");
 				*pui32IgnoreSwizzle = 1;
@@ -1341,7 +1463,10 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
 				*pui32IgnoreSwizzle = 1;
 				break;
 			case NAME_IS_FRONT_FACE:
-				bcatcstr(glsl, "(gl_FrontFacing ? 0xffffffffu : uint(0))");
+				if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
+					bcatcstr(glsl, "(gl_FrontFacing ? 0xffffffffu : uint(0))");
+				else
+					bcatcstr(glsl, "(gl_FrontFacing ? int(1) : int(0))");
 				*pui32IgnoreSwizzle = 1;
 				break;
 			case NAME_PRIMITIVE_ID:
@@ -1414,7 +1539,7 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
 
 	if (hasCtor && (*pui32IgnoreSwizzle == 0))
 	{
-		TranslateOperandSwizzleWithMask(psContext, psOperand, ui32CompMask, piRebase ? *piRebase : 0);
+		TranslateOperandSwizzleWithMask(glsl, psContext, psOperand, ui32CompMask, piRebase ? *piRebase : 0);
 		*pui32IgnoreSwizzle = 1;
 	}
 
@@ -1423,7 +1548,13 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
 		if (requestedType == SVT_UINT || requestedType == SVT_UINT16 || requestedType == SVT_UINT8)
 			bcatcstr(glsl, ") * 0xffffffffu");
 		else
-			bcatcstr(glsl, ") * int(0xffffffffu)");
+		{
+			if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
+				bcatcstr(glsl, ") * int(0xffffffffu)");
+			else
+				bcatcstr(glsl, ") * int(0xffffffff)");
+		}
+
 		numParenthesis--;
 	}
 
@@ -1451,6 +1582,12 @@ void ToGLSL::TranslateOperand(bstring glsl, const Operand* psOperand, uint32_t u
 	if(psContext->psShader->ui32MajorVersion <=3)
 	{
 		ui32TOFlag &= ~(TO_AUTO_BITCAST_TO_FLOAT|TO_AUTO_BITCAST_TO_INT|TO_AUTO_BITCAST_TO_UINT);
+	}
+
+	if (!HaveUnsignedTypes(psContext->psShader->eTargetLanguage) && (ui32TOFlag & TO_FLAG_UNSIGNED_INTEGER))
+	{
+		ui32TOFlag &= ~TO_FLAG_UNSIGNED_INTEGER;
+		ui32TOFlag |= TO_FLAG_INTEGER;
 	}
 
 	if(ui32TOFlag & TO_FLAG_NAME_ONLY)
@@ -1560,14 +1697,23 @@ std::string ResourceName(HLSLCrossCompilerContext* psContext, ResourceGroup grou
 		{
 			oss << name;
 		}
-		if (((psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) != 0) && group == RGROUP_UAV)
+		if (psContext->IsVulkan() && group == RGROUP_UAV)
 			oss << "_origX" << ui32RegisterNumber << "X";
+
 	}
 	else
 	{
 		oss << "UnknownResource" << ui32RegisterNumber;
 	}
-	return oss.str();
+	std::string res = oss.str();
+	// Prefix sampler names with 'sampler' unless it already starts with it
+	if (group == RGROUP_SAMPLER)
+	{
+		if (strncmp(res.c_str(), "sampler", 7) != 0)
+			res.insert(0, "sampler");
+	}
+
+	return res;
 }
 void ResourceName(bstring targetStr, HLSLCrossCompilerContext* psContext, ResourceGroup group, const uint32_t ui32RegisterNumber, const int bZCompare)
 {

@@ -19,6 +19,7 @@ public:
 
 	bstring glsl;
 	bstring extensions;
+	bstring beforeMain;
 
 	bstring* currentGLSLString;//either glsl or earlyMain of current phase
 
@@ -26,6 +27,11 @@ public:
 
 	int indent;
 	unsigned int flags;
+
+	// Helper functions for checking flags	
+	// Returns true if VULKAN_BINDINGS flag is set
+	bool IsVulkan() const;
+
 	Shader* psShader;
 	GLSLCrossDependencyData* psDependencies;
 	const char *inputPrefix; // Prefix for shader inputs
@@ -48,7 +54,8 @@ public:
 
 	bool OutputNeedsDeclaring(const Operand* psOperand, const int count);
 
-	void RequireExtension(const std::string &extName);
+	bool RequireExtension(const std::string &extName);
+	bool EnableExtension(const std::string &extName);
 
 private:
 	std::set<std::string> m_EnabledExtensions;

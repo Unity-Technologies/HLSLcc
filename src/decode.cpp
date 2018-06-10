@@ -443,6 +443,8 @@ const uint32_t* DecodeDeclaration(Shader* psShader, const uint32_t* pui32Token, 
         case OPCODE_DCL_SAMPLER:
         {
 			psDecl->ui32NumOperands = 1;
+			psDecl->value.eSamplerMode = DecodeSamplerMode(*pui32Token);
+
 			DecodeOperand(pui32Token+ui32OperandOffset, &psDecl->asOperands[0]);
             break;
         }
@@ -628,9 +630,9 @@ const uint32_t* DecodeDeclaration(Shader* psShader, const uint32_t* pui32Token, 
 
             ui32OperandOffset++;
 
-            psDecl->value.interface.ui32InterfaceID = interfaceID;
-            psDecl->value.interface.ui32NumFuncTables = numClassesImplementingThisInterface;
-            psDecl->value.interface.ui32ArraySize = arrayLen;
+            psDecl->value.iface.ui32InterfaceID = interfaceID;
+            psDecl->value.iface.ui32NumFuncTables = numClassesImplementingThisInterface;
+            psDecl->value.iface.ui32ArraySize = arrayLen;
 
             psShader->funcPointer[interfaceID].ui32NumBodiesPerTable = psDecl->ui32TableLength;
 
@@ -678,6 +680,7 @@ const uint32_t* DecodeDeclaration(Shader* psShader, const uint32_t* pui32Token, 
         }
 		case OPCODE_DCL_INPUT_CONTROL_POINT_COUNT:
 		{
+			psDecl->value.ui32MaxOutputVertexCount = DecodeOutputControlPointCount(*pui32Token);
 			break;
 		}
 		case OPCODE_HS_DECLS:

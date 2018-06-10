@@ -665,14 +665,6 @@ static TESSELLATOR_PARTITIONING DecodeTessPartitioning(uint32_t ui32Token)
 	return (TESSELLATOR_PARTITIONING)((ui32Token & 0x00003800) >> 11);
 }
 
-typedef enum TESSELLATOR_DOMAIN
-{
-    TESSELLATOR_DOMAIN_UNDEFINED = 0,
-    TESSELLATOR_DOMAIN_ISOLINE   = 1,
-    TESSELLATOR_DOMAIN_TRI       = 2,
-    TESSELLATOR_DOMAIN_QUAD      = 3
-} TESSELLATOR_DOMAIN;
-
 static TESSELLATOR_DOMAIN DecodeTessDomain(uint32_t ui32Token)
 {
 	return (TESSELLATOR_DOMAIN)((ui32Token & 0x00001800) >> 11);
@@ -779,5 +771,18 @@ static RESINFO_RETURN_TYPE DecodeResInfoReturnType(uint32_t ui32Token)
 {
     return (RESINFO_RETURN_TYPE)((ui32Token & 0x00001800) >> 11);
 }
+
+typedef enum SB_SAMPLER_MODE
+{
+	D3D10_SB_SAMPLER_MODE_DEFAULT = 0,
+	D3D10_SB_SAMPLER_MODE_COMPARISON = 1,
+	D3D10_SB_SAMPLER_MODE_MONO = 2,
+} SB_SAMPLER_MODE;
+
+static SB_SAMPLER_MODE DecodeSamplerMode(uint32_t ui32Token)
+{
+	return (SB_SAMPLER_MODE)((ui32Token & 0x00001800) >> 11);
+}
+
 
 #endif

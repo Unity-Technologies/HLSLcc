@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cmath>
 #include "internal_includes/toGLSL.h"
+#include "UnityInstancingFlexibleArraySize.h"
 
 using namespace HLSLcc;
 
@@ -25,18 +26,22 @@ using namespace HLSLcc;
 #endif
 #endif // #ifndef fpcheck
 
-static void DeclareConstBufferShaderVariable(const HLSLCrossCompilerContext *psContext, const char* Name, const struct ShaderVarType* psType, int unsizedArray, bool addUniformPrefix = false)
-	//const SHADER_VARIABLE_CLASS eClass, const SHADER_VARIABLE_TYPE eType,
-    //const char* pszName)
+void ToGLSL::DeclareConstBufferShaderVariable(const char* varName, const struct ShaderVarType* psType, const struct ConstantBuffer* psCBuf, int unsizedArray, bool addUniformPrefix)
 {
 	bstring glsl = *psContext->currentGLSLString;
 
 	if (psType->Class == SVC_STRUCT)
 	{
-		bformata(glsl, "\t%s%s_Type %s", addUniformPrefix ? "UNITY_UNIFORM " : "", Name, Name);
+		bformata(glsl, "\t%s%s_Type %s", addUniformPrefix ? "UNITY_UNIFORM " : "", varName, varName);
 		if (psType->Elements > 1)
 		{
-			bformata(glsl, "[%d]", psType->Elements);
+            if (HLSLcc::IsUnityFlexibleInstancingBuffer(psCBuf))
+            {
+                bformata(glsl, "[" UNITY_RUNTIME_INSTANCING_ARRAY_SIZE_MACRO "]");
+                m_NeedUnityInstancingArraySizeDecl = true;
+            }
+            else
+			    bformata(glsl, "[%d]", psType->Elements);
 		}
 	}
 	else if(psType->Class == SVC_MATRIX_COLUMNS || psType->Class == SVC_MATRIX_ROWS)
@@ -44,7 +49,7 @@ static void DeclareConstBufferShaderVariable(const HLSLCrossCompilerContext *psC
 		if (psContext->flags & HLSLCC_FLAG_TRANSLATE_MATRICES)
 		{
 			// Translate matrices into vec4 arrays
-			bformata(glsl, "\t%s%s " HLSLCC_TRANSLATE_MATRIX_FORMAT_STRING "%s", addUniformPrefix ? "UNITY_UNIFORM " : "", HLSLcc::GetConstructorForType(psContext, psType->Type, 4), psType->Rows, psType->Columns, Name);
+			bformata(glsl, "\t%s%s " HLSLCC_TRANSLATE_MATRIX_FORMAT_STRING "%s", addUniformPrefix ? "UNITY_UNIFORM " : "", HLSLcc::GetConstructorForType(psContext, psType->Type, 4), psType->Rows, psType->Columns, varName);
 			uint32_t elemCount = (psType->Class == SVC_MATRIX_COLUMNS ? psType->Columns : psType->Rows);
 			if (psType->Elements > 1)
 			{
@@ -54,7 +59,7 @@ static void DeclareConstBufferShaderVariable(const HLSLCrossCompilerContext *psC
 		}
 		else
 		{
-			bformata(glsl, "\t%s%s %s", addUniformPrefix ? "UNITY_UNIFORM " : "", HLSLcc::GetMatrixTypeName(psContext, psType->Type, psType->Columns, psType->Rows).c_str(), Name);
+			bformata(glsl, "\t%s%s %s", addUniformPrefix ? "UNITY_UNIFORM " : "", HLSLcc::GetMatrixTypeName(psContext, psType->Type, psType->Columns, psType->Rows).c_str(), varName);
 			if (psType->Elements > 1)
 			{
 				bformata(glsl, "[%d]", psType->Elements);
@@ -64,7 +69,7 @@ static void DeclareConstBufferShaderVariable(const HLSLCrossCompilerContext *psC
 	else
 	if (psType->Class == SVC_VECTOR && psType->Columns > 1)
 	{
-		bformata(glsl, "\t%s%s %s", addUniformPrefix ? "UNITY_UNIFORM " : "", HLSLcc::GetConstructorForType(psContext, psType->Type, psType->Columns), Name);
+		bformata(glsl, "\t%s%s %s", addUniformPrefix ? "UNITY_UNIFORM " : "", HLSLcc::GetConstructorForType(psContext, psType->Type, psType->Columns), varName);
 
 		if(psType->Elements > 1)
 		{
@@ -83,7 +88,7 @@ static void DeclareConstBufferShaderVariable(const HLSLCrossCompilerContext *psC
 				((ShaderVarType *)psType)->Type = SVT_INT;
 		}
 
-		bformata(glsl, "\t%s%s %s", addUniformPrefix ? "UNITY_UNIFORM " : "", HLSLcc::GetConstructorForType(psContext, psType->Type, 1), Name);
+		bformata(glsl, "\t%s%s %s", addUniformPrefix ? "UNITY_UNIFORM " : "", HLSLcc::GetConstructorForType(psContext, psType->Type, 1), varName);
 
 		if(psType->Elements > 1)
 		{
@@ -96,7 +101,7 @@ static void DeclareConstBufferShaderVariable(const HLSLCrossCompilerContext *psC
 }
 
 //In GLSL embedded structure definitions are not supported.
-static void PreDeclareStructType(const HLSLCrossCompilerContext *psContext, const std::string &name, const struct ShaderVarType* psType)
+void ToGLSL::PreDeclareStructType(const std::string &name, const struct ShaderVarType* psType)
 {
 	bstring glsl = *psContext->currentGLSLString;
 	uint32_t i;
@@ -105,7 +110,7 @@ static void PreDeclareStructType(const HLSLCrossCompilerContext *psContext, cons
 	{
 		if(psType->Members[i].Class == SVC_STRUCT)
 		{
-			PreDeclareStructType(psContext, psType->Members[i].name, &psType->Members[i]);
+			PreDeclareStructType(psType->Members[i].name, &psType->Members[i]);
 		}
 	}
 
@@ -120,7 +125,7 @@ static void PreDeclareStructType(const HLSLCrossCompilerContext *psContext, cons
 		{
 			ASSERT(psType->Members.size() != 0);
 
-			DeclareConstBufferShaderVariable(psContext, psType->Members[i].name.c_str(), &psType->Members[i], 0);
+			DeclareConstBufferShaderVariable(psType->Members[i].name.c_str(), &psType->Members[i], NULL, 0);
 		}
 
 		bformata(glsl, "};\n");
@@ -261,7 +266,7 @@ static void DeclareInput(
 		}
 
 		psShader->acInputDeclared[regSpace][ui32Reg] = (char)psSig->ui32Mask;
-		
+
 		// Do the reflection report on vertex shader inputs
 		if (psShader->eShaderType == VERTEX_SHADER)
 		{
@@ -280,16 +285,16 @@ static void DeclareInput(
 					psContext->psShader->abScalarInput[regSpace][regNum] |= (int)ui32CompMask;
 
 					if(psShader->eShaderType == HULL_SHADER || psDecl->asOperands[0].eType == OPERAND_TYPE_INPUT_CONTROL_POINT)
-						bformata(glsl, "%s%s %s %s %s [];\n", locationQualifier.c_str(), StorageQualifier, Precision, scalarType, InputName);
+						bformata(glsl, "%s%s%s %s %s %s [];\n", locationQualifier.c_str(), Interpolation, StorageQualifier, Precision, scalarType, InputName);
 					else
-						bformata(glsl, "%s%s %s %s %s [%d];\n", locationQualifier.c_str(), StorageQualifier, Precision, scalarType, InputName, arraySize);
+						bformata(glsl, "%s%s%s %s %s %s [%d];\n", locationQualifier.c_str(), Interpolation, StorageQualifier, Precision, scalarType, InputName, arraySize);
 				}
 				else
 				{
 					if (psShader->eShaderType == HULL_SHADER || psDecl->asOperands[0].eType == OPERAND_TYPE_INPUT_CONTROL_POINT)
-						bformata(glsl, "%s%s %s %s%d %s [];\n", locationQualifier.c_str(), StorageQualifier, Precision, vecType, iNumComponents, InputName);
+						bformata(glsl, "%s%s%s %s %s%d %s [];\n", locationQualifier.c_str(), Interpolation, StorageQualifier, Precision, vecType, iNumComponents, InputName);
 					else
-						bformata(glsl, "%s%s %s %s%d %s [%d];\n", locationQualifier.c_str(), StorageQualifier, Precision, vecType, iNumComponents, InputName,
+						bformata(glsl, "%s%s%s %s %s%d %s [%d];\n", locationQualifier.c_str(), Interpolation, StorageQualifier, Precision, vecType, iNumComponents, InputName,
 							psDecl->asOperands[0].aui32ArraySizes[0]);
 				}
 				break;
@@ -326,19 +331,35 @@ static void DeclareInput(
 	}
 }
 
-static void AddBuiltinInput(HLSLCrossCompilerContext* psContext, const Declaration* psDecl, const char* builtinName)
+bool ToGLSL::RenderTargetDeclared(uint32_t input)
 {
-	// Nothing to do currently as we read from builtins directly.
+	if (m_DeclaredRenderTarget.find(input) != m_DeclaredRenderTarget.end())
+		return true;
+
+	m_DeclaredRenderTarget.insert(input);
+	return false;
 }
 
+void ToGLSL::AddBuiltinInput(const Declaration* psDecl, const char* builtinName)
+{
+	Shader* psShader = psContext->psShader; const Operand* op = &psDecl->asOperands[0];
+
+	const int regSpace = op->GetRegisterSpace(psContext); ASSERT(regSpace == 0);
+	const uint32_t ui32Reg = op->ui32RegisterNumber, ui32CompMask = op->ui32CompMask;
+
+	// we need to at least mark if they are scalars or not (as we might need to use vector ctor)
+	if(op->GetNumInputElements(psContext) == 1)
+		psShader->abScalarInput[regSpace][ui32Reg] |= (int)ui32CompMask;
+}
 
 
 void ToGLSL::AddBuiltinOutput(const Declaration* psDecl, int arrayElements, const char* builtinName)
 {
 	bstring glsl = *psContext->currentGLSLString;
 	Shader* psShader = psContext->psShader;
+	const SPECIAL_NAME eSpecialName = psDecl->asOperands[0].eSpecialName;
 
-	if (psDecl->asOperands[0].eSpecialName != NAME_CLIP_DISTANCE)
+	if (eSpecialName != NAME_CLIP_DISTANCE && eSpecialName != NAME_CULL_DISTANCE)
 		return;
 
 	psContext->psShader->asPhases[psContext->currentPhase].hasPostShaderCode = 1;
@@ -359,87 +380,66 @@ void ToGLSL::AddBuiltinOutput(const Declaration* psDecl, int arrayElements, cons
 		{
 
 		}
-		else
+		else if((eSpecialName == NAME_CLIP_DISTANCE || eSpecialName == NAME_CULL_DISTANCE) && psContext->psShader->eShaderType != HULL_SHADER)
 		{
-			// Case 828454 : For some reason DX compiler seems to inject clip distance declaration to the hull shader sometimes
+			// Case 828454 : For some reason DX compiler seems to inject clip/cull distance declaration to the hull shader sometimes
 			// even though it's not used at all, and overlaps some completely unrelated patch constant declarations. We'll just ignore this now.
 			// Revisit this if this actually pops up elsewhere.
-			if(psDecl->asOperands[0].eSpecialName == NAME_CLIP_DISTANCE && psContext->psShader->eShaderType != HULL_SHADER)
+
+			// cull/clip distance are pretty similar (the only real difference is extension name (and functionality, but we dont care here))
+			int max = psDecl->asOperands[0].GetMaxComponent();
+
+			if (IsESLanguage(psShader->eTargetLanguage))
+				psContext->RequireExtension("GL_EXT_clip_cull_distance");
+			else if(eSpecialName == NAME_CULL_DISTANCE)
+				psContext->RequireExtension("GL_ARB_cull_distance");	// TODO: it is builtin in GLSL 4.5 (should we care?)
+			const char* glName = eSpecialName == NAME_CLIP_DISTANCE ? "Clip" : "Cull";
+
+			int applySwizzle = psDecl->asOperands[0].GetNumSwizzleElements() > 1 ? 1 : 0;
+			const char* swizzle[] = {".x", ".y", ".z", ".w"};
+
+			ASSERT(psSignature!=NULL);
+			const int index = psSignature->ui32SemanticIndex;
+
+			//Clip/Cull distance can be spread across 1 or 2 outputs (each no more than a vec4).
+			//Some examples:
+			//float4 clip[2] : SV_ClipDistance; //8 clip distances
+			//float3 clip[2] : SV_ClipDistance; //6 clip distances
+			//float4 clip : SV_ClipDistance; //4 clip distances
+			//float clip : SV_ClipDistance; //1 clip distance.
+
+			//In GLSL the clip/cull distance built-in is an array of up to 8 floats.
+			//So vector to array conversion needs to be done here.
+			int multiplier = 1;
+			if(index == 1)
 			{
-				int max = psDecl->asOperands[0].GetMaxComponent();
-
-				if (IsESLanguage(psShader->eTargetLanguage))
+				const ShaderInfo::InOutSignature* psFirstClipSignature;
+				if (psShader->sInfo.GetOutputSignatureFromSystemValue(eSpecialName, 1, &psFirstClipSignature))
 				{
-					psContext->RequireExtension("GL_EXT_clip_cull_distance");
-				}
-
-				int applySwizzle = psDecl->asOperands[0].GetNumSwizzleElements() > 1 ? 1 : 0;
-				int index;
-				int i;
-				int multiplier = 1;
-				const char* swizzle[] = {".x", ".y", ".z", ".w"};
-
-				ASSERT(psSignature!=NULL);
-
-				index = psSignature->ui32SemanticIndex;
-
-				//Clip distance can be spread across 1 or 2 outputs (each no more than a vec4).
-				//Some examples:
-				//float4 clip[2] : SV_ClipDistance; //8 clip distances
-				//float3 clip[2] : SV_ClipDistance; //6 clip distances
-				//float4 clip : SV_ClipDistance; //4 clip distances
-				//float clip : SV_ClipDistance; //1 clip distance.
-
-				//In GLSL the clip distance built-in is an array of up to 8 floats.
-				//So vector to array conversion needs to be done here.
-				if(index == 1)
-				{
-					const ShaderInfo::InOutSignature* psFirstClipSignature;
-					if (psShader->sInfo.GetOutputSignatureFromSystemValue(NAME_CLIP_DISTANCE, 1, &psFirstClipSignature))
-					{
-						if(psFirstClipSignature->ui32Mask & (1 << 3))
-						{
-							multiplier = 4;
-						}
-						else
-						if(psFirstClipSignature->ui32Mask & (1 << 2))
-						{
-							multiplier = 3;
-						}
-						else
-						if(psFirstClipSignature->ui32Mask & (1 << 1))
-						{
-							multiplier = 2;
-						}
-					}
-				}
-
-				// Add a specially crafted comment so runtime knows to enable clip planes.
-				// We may end up doing 2 of these, so at runtime OR the results
-				uint32_t clipmask = psDecl->asOperands[0].GetAccessMask();
-				if(index != 0)
-					clipmask <<= multiplier;
-				bformata(psContext->glsl, "// HLSLcc_ClipDistances_%x\n", clipmask);
-
-				psContext->psShader->asPhases[psContext->currentPhase].acOutputNeedsRedirect[psSignature->ui32Register] = 0xff;
-				bformata(psContext->glsl, "vec4 phase%d_glClipDistance%d;\n", psContext->currentPhase, index);
-
-				for(i=0; i<max; ++i)
-				{
-					psContext->AddIndentation();
-					bformata(glsl, "%s[%d] = (", builtinName, i + multiplier*index);
-					TranslateOperand(&psDecl->asOperands[0], TO_FLAG_NONE);
-					if(applySwizzle)
-					{
-						bformata(glsl, ")%s;\n", swizzle[i]);
-					}
-					else
-					{
-						bformata(glsl, ");\n");
-					}
+					if(psFirstClipSignature->ui32Mask & (1 << 3))		multiplier = 4;
+					else if(psFirstClipSignature->ui32Mask & (1 << 2))	multiplier = 3;
+					else if(psFirstClipSignature->ui32Mask & (1 << 1))	multiplier = 2;
 				}
 			}
 
+			// Add a specially crafted comment so runtime knows to enable clip planes.
+			// We may end up doing 2 of these, so at runtime OR the results
+			uint32_t clipmask = psDecl->asOperands[0].GetAccessMask();
+			if(index != 0)
+				clipmask <<= multiplier;
+			bformata(psContext->glsl, "// HLSLcc_%sDistances_%x\n", glName, clipmask);
+
+			psContext->psShader->asPhases[psContext->currentPhase].acOutputNeedsRedirect[psSignature->ui32Register] = 0xff;
+			bformata(psContext->glsl, "vec4 phase%d_gl%sDistance%d;\n", psContext->currentPhase, glName, index);
+
+			for(int i=0; i<max; ++i)
+			{
+				psContext->AddIndentation();
+				bformata(glsl, "%s[%d] = (", builtinName, i + multiplier*index);
+				TranslateOperand(&psDecl->asOperands[0], TO_FLAG_NONE);
+				if(applySwizzle)	bformata(glsl, ")%s;\n", swizzle[i]);
+				else				bformata(glsl, ");\n");
+			}
 		}
 		psContext->indent--;
 		psContext->currentGLSLString = &psContext->glsl;
@@ -508,12 +508,12 @@ void ToGLSL::HandleOutputRedirect(const Declaration *psDecl, const char *Precisi
 
 			if (psSig->eComponentType == INOUT_COMPONENT_SINT32)
 			{
-				bformata(psPhase->postShaderCode, "floatBitsToInt(");
+				bformata(psPhase->postShaderCode, HaveBitEncodingOps(psContext->psShader->eTargetLanguage) ? "floatBitsToInt(" : "int(");
 				hasCast = 1;
 			}
 			else if (psSig->eComponentType == INOUT_COMPONENT_UINT32)
 			{
-				bformata(psPhase->postShaderCode, "floatBitsToUint(");
+				bformata(psPhase->postShaderCode, HaveBitEncodingOps(psContext->psShader->eTargetLanguage) ? "floatBitsToUint(" : "int(");
 				hasCast = 1;
 			}
 			bformata(psPhase->postShaderCode, "phase%d_Output%d_%d.", psContext->currentPhase, regSpace, psOperand->ui32RegisterNumber);
@@ -545,7 +545,6 @@ void ToGLSL::HandleOutputRedirect(const Declaration *psDecl, const char *Precisi
 void ToGLSL::AddUserOutput(const Declaration* psDecl)
 {
 	bstring glsl = *psContext->currentGLSLString;
-	bstring extensions = psContext->extensions;
 	Shader* psShader = psContext->psShader;
 
 	if(psContext->OutputNeedsDeclaring(&psDecl->asOperands[0], 1))
@@ -570,7 +569,7 @@ void ToGLSL::AddUserOutput(const Declaration* psDecl)
 
 		if (psSignature->semanticName == "POS" && psOperand->ui32RegisterNumber == 0 && psContext->psShader->eShaderType == VERTEX_SHADER)
 			return;
-		
+
 		iNumComponents = GetNumberBitsSet(psSignature->ui32Mask);
 		if (iNumComponents == 1)
 			psContext->psShader->abScalarOutput[regSpace][ui32Reg] |= (int)psDecl->asOperands[0].ui32CompMask;
@@ -622,7 +621,7 @@ void ToGLSL::AddUserOutput(const Declaration* psDecl)
 				}
 				case OPERAND_MIN_PRECISION_FLOAT_2_8:
 				{
-					Precision = "lowp ";
+                    Precision = EmitLowp(psContext) ? "lowp " : "mediump ";
 					break;
 				}
 				case OPERAND_MIN_PRECISION_SINT_16:
@@ -647,16 +646,22 @@ void ToGLSL::AddUserOutput(const Declaration* psDecl)
 				switch(psDecl->asOperands[0].eType)
 				{
 					case OPERAND_TYPE_OUTPUT_COVERAGE_MASK:
+					{
+						break;
+					}
 					case OPERAND_TYPE_OUTPUT_DEPTH:
 					{
-
+						if (psShader->eTargetLanguage == LANG_ES_100 && !psContext->EnableExtension("GL_EXT_frag_depth"))
+						{
+							bcatcstr(psContext->extensions, "#ifdef GL_EXT_frag_depth\n");
+							bcatcstr(psContext->extensions, "#define gl_FragDepth gl_FragDepthEXT\n");
+							bcatcstr(psContext->extensions, "#endif\n");
+						}
 						break;
 					}
 					case OPERAND_TYPE_OUTPUT_DEPTH_GREATER_EQUAL:
 					{
-						bcatcstr(extensions, "#ifdef GL_ARB_conservative_depth\n");
-						bcatcstr(extensions, "#extension GL_ARB_conservative_depth : enable\n");
-						bcatcstr(extensions, "#endif\n");
+						psContext->EnableExtension("GL_ARB_conservative_depth");
 						bcatcstr(glsl, "#ifdef GL_ARB_conservative_depth\n");
 						bcatcstr(glsl, "layout (depth_greater) out float gl_FragDepth;\n");
 						bcatcstr(glsl, "#endif\n");
@@ -664,9 +669,7 @@ void ToGLSL::AddUserOutput(const Declaration* psDecl)
 					}
 					case OPERAND_TYPE_OUTPUT_DEPTH_LESS_EQUAL:
 					{
-						bcatcstr(extensions, "#ifdef GL_ARB_conservative_depth\n");
-						bcatcstr(extensions, "#extension GL_ARB_conservative_depth : enable\n");
-						bcatcstr(extensions, "#endif\n");
+						psContext->EnableExtension("GL_ARB_conservative_depth");
 						bcatcstr(glsl, "#ifdef GL_ARB_conservative_depth\n");
 						bcatcstr(glsl, "layout (depth_less) out float gl_FragDepth;\n");
 						bcatcstr(glsl, "#endif\n");
@@ -674,55 +677,62 @@ void ToGLSL::AddUserOutput(const Declaration* psDecl)
 					}
 					default:
 					{
+						uint32_t renderTarget = psDecl->asOperands[0].ui32RegisterNumber;
+
+						char OutputName[512];
+						bstring oname;
+						oname = bformat("%s%s%d", psContext->outputPrefix, psSignature->semanticName.c_str(), renderTarget);
+						strncpy(OutputName, (char *)oname->data, 512);
+						bdestroy(oname);
+
+						if (psShader->eTargetLanguage == LANG_ES_100 && renderTarget > 0)
+							psContext->EnableExtension("GL_EXT_draw_buffers");
+
+						bool haveFramebufferFetch = (psShader->extensions->EXT_shader_framebuffer_fetch &&
+													psShader->eShaderType == PIXEL_SHADER &&
+													psContext->flags & HLSLCC_FLAG_SHADER_FRAMEBUFFER_FETCH);
+
 						if(WriteToFragData(psContext->psShader->eTargetLanguage))
 						{
-							bformata(glsl, "#define Output%d gl_FragData[%d]\n", psDecl->asOperands[0].ui32RegisterNumber, psDecl->asOperands[0].ui32RegisterNumber);
+							bformata(glsl, "#define %s gl_FragData[%d]\n", OutputName, renderTarget);
 						}
 						else
 						{
-							char OutputName[512];
-							bstring oname;
-							oname = bformat("%s%s%d", psContext->outputPrefix, psSignature->semanticName.c_str(), psSignature->ui32SemanticIndex);
-							strncpy(OutputName, (char *)oname->data, 512);
-							bdestroy(oname);
-
-							bstring layoutQualifier = bformat("");
-							bool haveFramebufferFetch = (psShader->extensions->EXT_shader_framebuffer_fetch &&
-														 psShader->eShaderType == PIXEL_SHADER &&
-														 psContext->flags & HLSLCC_FLAG_SHADER_FRAMEBUFFER_FETCH);
-							if (haveFramebufferFetch)
-								bcatcstr(glsl, "#ifdef GL_EXT_shader_framebuffer_fetch\n");
-
-							if (HaveInOutLocationQualifier(psContext->psShader->eTargetLanguage) ||
-								HaveLimitedInOutLocationQualifier(psContext->psShader->eTargetLanguage, psContext->psShader->extensions))
+							if (!RenderTargetDeclared(renderTarget))
 							{
-								uint32_t index = 0;
-								uint32_t renderTarget = psDecl->asOperands[0].ui32RegisterNumber;
+								bstring layoutQualifier = bformat("");
 
-								if((psContext->flags & HLSLCC_FLAG_DUAL_SOURCE_BLENDING) && DualSourceBlendSupported(psContext->psShader->eTargetLanguage))
+								if (HaveInOutLocationQualifier(psContext->psShader->eTargetLanguage) ||
+									HaveLimitedInOutLocationQualifier(psContext->psShader->eTargetLanguage, psContext->psShader->extensions))
 								{
-									if(renderTarget > 0)
+									uint32_t index = 0;
+
+									if((psContext->flags & HLSLCC_FLAG_DUAL_SOURCE_BLENDING) && DualSourceBlendSupported(psContext->psShader->eTargetLanguage))
 									{
-										renderTarget = 0;
-										index = 1;
+										if(renderTarget > 0)
+										{
+											renderTarget = 0;
+											index = 1;
+										}
+										layoutQualifier = bformat("layout(location = %d, index = %d) ", renderTarget, index);
 									}
-									layoutQualifier = bformat("layout(location = %d, index = %d) ", renderTarget, index);
+									else
+									{
+										layoutQualifier = bformat("layout(location = %d) ", renderTarget);
+									}
+								}
+
+								if (haveFramebufferFetch)
+								{
+									bcatcstr(glsl, "#ifdef GL_EXT_shader_framebuffer_fetch\n");
+									bformata(glsl, "%sinout %s%s %s;\n", bstr2cstr(layoutQualifier, '\0'), Precision, type->data, OutputName);
+									bcatcstr(glsl, "#else\n");
+									bformata(glsl, "%sout %s%s %s;\n", bstr2cstr(layoutQualifier, '\0'), Precision, type->data, OutputName);
+									bcatcstr(glsl, "#endif\n");
 								}
 								else
-								{
-									layoutQualifier = bformat("layout(location = %d) ", renderTarget);
-								}
+									bformata(glsl, "%sout %s%s %s;\n", bstr2cstr(layoutQualifier, '\0'), Precision, type->data, OutputName);
 							}
-
-							if (haveFramebufferFetch)
-							{
-								bformata(glsl, "%sinout %s%s %s;\n", bstr2cstr(layoutQualifier, '\0'), Precision, type->data, OutputName);
-								bcatcstr(glsl, "#else\n");
-								bformata(glsl, "%sout %s%s %s;\n", bstr2cstr(layoutQualifier, '\0'), Precision, type->data, OutputName);
-								bcatcstr(glsl, "#endif\n");
-							}
-							else
-								bformata(glsl, "%sout %s%s %s;\n", bstr2cstr(layoutQualifier, '\0'), Precision, type->data, OutputName);
 						}
 						break;
 					}
@@ -743,7 +753,7 @@ void ToGLSL::AddUserOutput(const Declaration* psDecl)
 
 				if (psShader->eShaderType == VERTEX_SHADER)
 				{
-					if (psSignature->eComponentType == INOUT_COMPONENT_UINT32 || 
+					if (psSignature->eComponentType == INOUT_COMPONENT_UINT32 ||
 						psSignature->eComponentType == INOUT_COMPONENT_SINT32) // GLSL spec requires that integer vertex outputs always have "flat" interpolation
 					{
 						Interpolation = GetInterpolationString(INTERPOLATION_CONSTANT, psContext->psShader->eTargetLanguage);
@@ -782,7 +792,7 @@ void ToGLSL::AddUserOutput(const Declaration* psDecl)
             default:
                 ASSERT(0);
                 break;
-                
+
 		}
 		HandleOutputRedirect(psDecl, Precision);
 		bdestroy(type);
@@ -790,20 +800,18 @@ void ToGLSL::AddUserOutput(const Declaration* psDecl)
 
 }
 
-static void DeclareUBOConstants(HLSLCrossCompilerContext* psContext, const uint32_t ui32BindingPoint,
-							const ConstantBuffer* psCBuf,
-							bstring glsl)
+void ToGLSL::DeclareUBOConstants(const uint32_t ui32BindingPoint, const ConstantBuffer* psCBuf, bstring glsl)
 {
 	uint32_t i;
 
 	bool skipUnused = false;
-	
+
 	if((psContext->flags & HLSLCC_FLAG_REMOVE_UNUSED_GLOBALS) && psCBuf->name == "$Globals")
 		skipUnused = true;
-	
-	
-	std::string Name = psCBuf->name;
-	if(Name == "$Globals") 
+
+
+	std::string cbName = psCBuf->name;
+	if(cbName == "$Globals")
 	{
 		// Need to tweak Globals struct name to prevent clashes between shader stages
 		char prefix = 'A';
@@ -832,17 +840,15 @@ static void DeclareUBOConstants(HLSLCrossCompilerContext* psContext, const uint3
 			break;
 		}
 
-		Name[0] = prefix;
+        cbName[0] = prefix;
 	}
 
 	for(i=0; i < psCBuf->asVars.size(); ++i)
 	{
 		if(skipUnused && !psCBuf->asVars[i].sType.m_IsUsed)
 			continue;
-		
-		PreDeclareStructType(psContext,
-			psCBuf->asVars[i].name,
-		    &psCBuf->asVars[i].sType);
+
+		PreDeclareStructType(psCBuf->asVars[i].name, &psCBuf->asVars[i].sType);
 	}
 
 	if (psContext->flags & HLSLCC_FLAG_WRAP_UBO)
@@ -851,7 +857,7 @@ static void DeclareUBOConstants(HLSLCrossCompilerContext* psContext, const uint3
 	/* [layout (location = X)] uniform vec4 HLSLConstantBufferName[numConsts]; */
 	if ((psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) != 0)
 	{
-		GLSLCrossDependencyData::VulkanResourceBinding binding = psContext->psDependencies->GetVulkanResourceBinding(Name, false, 1);
+		GLSLCrossDependencyData::VulkanResourceBinding binding = psContext->psDependencies->GetVulkanResourceBinding(cbName, false, 1);
 		bformata(glsl, "layout(set = %d, binding = %d, std140) ", binding.first, binding.second);
 	}
 	else
@@ -862,7 +868,7 @@ static void DeclareUBOConstants(HLSLCrossCompilerContext* psContext, const uint3
 			bcatcstr(glsl, "layout(std140) ");
 	}
 
-	bformata(glsl, "uniform %s {\n", Name.c_str());
+	bformata(glsl, "uniform %s {\n", cbName.c_str());
 
 	if (psContext->flags & HLSLCC_FLAG_WRAP_UBO)
 		bformata(glsl, "#else\n#define UNITY_UNIFORM uniform\n#endif\n");
@@ -871,10 +877,9 @@ static void DeclareUBOConstants(HLSLCrossCompilerContext* psContext, const uint3
 	{
 		if(skipUnused && !psCBuf->asVars[i].sType.m_IsUsed)
 			continue;
-		
-		DeclareConstBufferShaderVariable(psContext,
-			psCBuf->asVars[i].name.c_str(),
-		    &psCBuf->asVars[i].sType, 0, psContext->flags & HLSLCC_FLAG_WRAP_UBO ? true : false);
+
+		DeclareConstBufferShaderVariable(psCBuf->asVars[i].name.c_str(),
+		    &psCBuf->asVars[i].sType, psCBuf, 0, psContext->flags & HLSLCC_FLAG_WRAP_UBO ? true : false);
 	}
 
 	if (psContext->flags & HLSLCC_FLAG_WRAP_UBO)
@@ -936,7 +941,12 @@ static void DeclareBufferVariable(HLSLCrossCompilerContext* psContext, uint32_t 
 		bformata(glsl, "coherent uint %s_counter;\n\t", BufName.c_str());
 
 	if (isRaw)
-		bcatcstr(glsl, "uint");
+	{
+		if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
+			bcatcstr(glsl, "uint");
+		else
+			bcatcstr(glsl, "int");
+	}
 	else
 		bformata(glsl, "%s_type", BufName.c_str());
 
@@ -961,16 +971,14 @@ void ToGLSL::DeclareStructConstants(const uint32_t ui32BindingPoint,
 	if ((psContext->flags & HLSLCC_FLAG_UNIFORM_BUFFER_OBJECT) == 0)
 		useGlobalsStruct = 0;
 
-	
-	
+
+
 	for(i=0; i < psCBuf->asVars.size(); ++i)
 	{
 		if(skipUnused && !psCBuf->asVars[i].sType.m_IsUsed)
 			continue;
-		
-		PreDeclareStructType(psContext,
-			psCBuf->asVars[i].name,
-		    &psCBuf->asVars[i].sType);
+
+		PreDeclareStructType(psCBuf->asVars[i].name, &psCBuf->asVars[i].sType);
 	}
 
 	/* [layout (location = X)] uniform vec4 HLSLConstantBufferName[numConsts]; */
@@ -998,13 +1006,11 @@ void ToGLSL::DeclareStructConstants(const uint32_t ui32BindingPoint,
 	{
 		if(skipUnused && !psCBuf->asVars[i].sType.m_IsUsed)
 			continue;
-		
+
 		if(!useGlobalsStruct)
 			bcatcstr(glsl, "uniform ");
 
-		DeclareConstBufferShaderVariable(psContext,
-			psCBuf->asVars[i].name.c_str(),
-		    &psCBuf->asVars[i].sType, 0);
+		DeclareConstBufferShaderVariable(psCBuf->asVars[i].name.c_str(), &psCBuf->asVars[i].sType, psCBuf, 0);
 	}
 
 	if(useGlobalsStruct)
@@ -1017,7 +1023,170 @@ void ToGLSL::DeclareStructConstants(const uint32_t ui32BindingPoint,
 	}
 }
 
-static const char* GetSamplerType(HLSLCrossCompilerContext* psContext,
+static const char* GetVulkanTextureType(HLSLCrossCompilerContext* psContext,
+	const RESOURCE_DIMENSION eDimension,
+	const uint32_t ui32RegisterNumber)
+{
+	const ResourceBinding* psBinding = 0;
+	RESOURCE_RETURN_TYPE eType = RETURN_TYPE_UNORM;
+	int found;
+	found = psContext->psShader->sInfo.GetResourceFromBindingPoint(RGROUP_TEXTURE, ui32RegisterNumber, &psBinding);
+	if (found)
+	{
+		eType = (RESOURCE_RETURN_TYPE)psBinding->ui32ReturnType;
+	}
+	switch (eDimension)
+	{
+	case RESOURCE_DIMENSION_BUFFER:
+	{
+		switch (eType)
+		{
+		case RETURN_TYPE_SINT:
+			return "itextureBuffer";
+		case RETURN_TYPE_UINT:
+			return "utextureBuffer";
+		default:
+			return "textureBuffer";
+		}
+		break;
+	}
+
+	case RESOURCE_DIMENSION_TEXTURE1D:
+	{
+		switch (eType)
+		{
+		case RETURN_TYPE_SINT:
+			return "itexture1D";
+		case RETURN_TYPE_UINT:
+			return "utexture1D";
+		default:
+			return "texture1D";
+		}
+		break;
+	}
+
+	case RESOURCE_DIMENSION_TEXTURE2D:
+	{
+		switch (eType)
+		{
+		case RETURN_TYPE_SINT:
+			return "itexture2D";
+		case RETURN_TYPE_UINT:
+			return "utexture2D";
+		default:
+			return "texture2D";
+		}
+		break;
+	}
+
+	case RESOURCE_DIMENSION_TEXTURE2DMS:
+	{
+		switch (eType)
+		{
+		case RETURN_TYPE_SINT:
+			return "itexture2DMS";
+		case RETURN_TYPE_UINT:
+			return "utexture2DMS";
+		default:
+			return "texture2DMS";
+		}
+		break;
+	}
+
+	case RESOURCE_DIMENSION_TEXTURE3D:
+	{
+		switch (eType)
+		{
+		case RETURN_TYPE_SINT:
+			return "itexture3D";
+		case RETURN_TYPE_UINT:
+			return "utexture3D";
+		default:
+			return "texture3D";
+		}
+		break;
+	}
+
+	case RESOURCE_DIMENSION_TEXTURECUBE:
+	{
+		switch (eType)
+		{
+		case RETURN_TYPE_SINT:
+			return "itextureCube";
+		case RETURN_TYPE_UINT:
+			return "utextureCube";
+		default:
+			return "textureCube";
+		}
+		break;
+	}
+
+	case RESOURCE_DIMENSION_TEXTURE1DARRAY:
+	{
+		switch (eType)
+		{
+		case RETURN_TYPE_SINT:
+			return "itexture1DArray";
+		case RETURN_TYPE_UINT:
+			return "utexture1DArray";
+		default:
+			return "texture1DArray";
+		}
+		break;
+	}
+
+	case RESOURCE_DIMENSION_TEXTURE2DARRAY:
+	{
+		switch (eType)
+		{
+		case RETURN_TYPE_SINT:
+			return "itexture2DArray";
+		case RETURN_TYPE_UINT:
+			return "utexture2DArray";
+		default:
+			return "texture2DArray";
+		}
+		break;
+	}
+
+	case RESOURCE_DIMENSION_TEXTURE2DMSARRAY:
+	{
+		switch (eType)
+		{
+		case RETURN_TYPE_SINT:
+			return "itexture2DMSArray";
+		case RETURN_TYPE_UINT:
+			return "utexture2DMSArray";
+		default:
+			return "texture2DMSArray";
+		}
+		break;
+	}
+
+	case RESOURCE_DIMENSION_TEXTURECUBEARRAY:
+	{
+		switch (eType)
+		{
+		case RETURN_TYPE_SINT:
+			return "itextureCubeArray";
+		case RETURN_TYPE_UINT:
+			return "utextureCubeArray";
+		default:
+			return "textureCubeArray";
+		}
+		break;
+	}
+	default:
+		ASSERT(0);
+		break;
+
+	}
+
+	return "texture2D";
+}
+
+// Not static because this is used in toGLSLInstruction.cpp when sampling Vulkan textures
+const char* GetSamplerType(HLSLCrossCompilerContext* psContext,
 					 const RESOURCE_DIMENSION eDimension,
 					 const uint32_t ui32RegisterNumber)
 {
@@ -1191,12 +1360,38 @@ static const char *GetSamplerPrecision(const HLSLCrossCompilerContext *psContext
 	default:
 	case REFLECT_RESOURCE_PRECISION_UNKNOWN:
 	case REFLECT_RESOURCE_PRECISION_LOWP:
-		return "lowp ";
+        return EmitLowp(psContext) ? "lowp " : "mediump ";
 	case REFLECT_RESOURCE_PRECISION_HIGHP:
 		return "highp ";
 	case REFLECT_RESOURCE_PRECISION_MEDIUMP:
 		return "mediump ";
 	}
+}
+static void TranslateVulkanResource(HLSLCrossCompilerContext* psContext, const Declaration* psDecl)
+{
+	bstring glsl = *psContext->currentGLSLString;
+	Shader* psShader = psContext->psShader;
+
+	const ResourceBinding *psBinding = NULL;
+	psShader->sInfo.GetResourceFromBindingPoint(RGROUP_TEXTURE, psDecl->asOperands[0].ui32RegisterNumber, &psBinding);
+	ASSERT(psBinding != NULL);
+
+	const char *samplerPrecision = GetSamplerPrecision(psContext, psBinding ? psBinding->ePrecision : REFLECT_RESOURCE_PRECISION_UNKNOWN);
+	std::string tname = ResourceName(psContext, RGROUP_TEXTURE, psDecl->asOperands[0].ui32RegisterNumber, 0);
+
+	const char* samplerTypeName = GetVulkanTextureType(psContext,
+		psDecl->value.eResourceDimension,
+		psDecl->asOperands[0].ui32RegisterNumber);
+
+	GLSLCrossDependencyData::VulkanResourceBinding binding = psContext->psDependencies->GetVulkanResourceBinding(tname);
+	bformata(glsl, "layout(set = %d, binding = %d) ", binding.first, binding.second);
+	bcatcstr(glsl, "uniform ");
+	bcatcstr(glsl, samplerPrecision);
+	bcatcstr(glsl, samplerTypeName);
+	bcatcstr(glsl, " ");
+	bcatcstr(glsl, tname.c_str());
+	bcatcstr(glsl, ";\n");
+
 }
 
 static void TranslateResourceTexture(HLSLCrossCompilerContext* psContext, const Declaration* psDecl, uint32_t samplerCanDoShadowCmp)
@@ -1216,11 +1411,16 @@ static void TranslateResourceTexture(HLSLCrossCompilerContext* psContext, const 
 		// Need to enable extension (either OES or ARB), but we only need to add it once
 		if (IsESLanguage(psContext->psShader->eTargetLanguage))
         {
-			psContext->RequireExtension("GL_OES_texture_cube_map_array");
-            psContext->RequireExtension("GL_EXT_texture_cube_map_array");
+			psContext->EnableExtension("GL_OES_texture_cube_map_array");
+			psContext->EnableExtension("GL_EXT_texture_cube_map_array");
         }
 		else
 			psContext->RequireExtension("GL_ARB_texture_cube_map_array");
+	}
+
+	if (psContext->psShader->eTargetLanguage == LANG_ES_100 && samplerCanDoShadowCmp && psDecl->ui32IsShadowTex)
+	{
+		psContext->EnableExtension("GL_EXT_shadow_samplers");
 	}
 
 	const ResourceBinding *psBinding = NULL;
@@ -1236,11 +1436,6 @@ static void TranslateResourceTexture(HLSLCrossCompilerContext* psContext, const 
 			for (i = psDecl->samplersUsed.begin(); i != psDecl->samplersUsed.end(); i++)
 			{
 				std::string tname = TextureSamplerName(&psShader->sInfo, psDecl->asOperands[0].ui32RegisterNumber, *i, 1);
-				if ((psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) != 0)
-				{
-					GLSLCrossDependencyData::VulkanResourceBinding binding = psContext->psDependencies->GetVulkanResourceBinding(tname);
-					bformata(glsl, "layout(set = %d, binding = %d) ", binding.first, binding.second);
-				}
 				bcatcstr(glsl, "uniform ");
 				bcatcstr(glsl, samplerPrecision);
 				bcatcstr(glsl, samplerTypeName);
@@ -1252,11 +1447,6 @@ static void TranslateResourceTexture(HLSLCrossCompilerContext* psContext, const 
 		for (i = psDecl->samplersUsed.begin(); i != psDecl->samplersUsed.end(); i++)
 		{
 			std::string tname = TextureSamplerName(&psShader->sInfo, psDecl->asOperands[0].ui32RegisterNumber, *i, 0);
-			if ((psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) != 0)
-			{
-				GLSLCrossDependencyData::VulkanResourceBinding binding = psContext->psDependencies->GetVulkanResourceBinding(tname);
-				bformata(glsl, "layout(set = %d, binding = %d) ", binding.first, binding.second);
-			}
 			bcatcstr(glsl, "uniform ");
 			bcatcstr(glsl, samplerPrecision);
 			bcatcstr(glsl, samplerTypeName);
@@ -1272,12 +1462,6 @@ static void TranslateResourceTexture(HLSLCrossCompilerContext* psContext, const 
 		//HLSL does not have separate types for depth compare, just different functions.
 		std::string tname = ResourceName(psContext, RGROUP_TEXTURE, psDecl->asOperands[0].ui32RegisterNumber, 1);
 
-		if ((psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) != 0)
-		{
-			GLSLCrossDependencyData::VulkanResourceBinding binding = psContext->psDependencies->GetVulkanResourceBinding(tname);
-			bformata(glsl, "layout(set = %d, binding = %d) ", binding.first, binding.second);
-		}
-
 		bcatcstr(glsl, "uniform ");
 		bcatcstr(glsl, samplerPrecision);
 		bcatcstr(glsl, samplerTypeName);
@@ -1288,11 +1472,6 @@ static void TranslateResourceTexture(HLSLCrossCompilerContext* psContext, const 
 
 	std::string tname = ResourceName(psContext, RGROUP_TEXTURE, psDecl->asOperands[0].ui32RegisterNumber, 0);
 
-	if ((psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) != 0)
-	{
-		GLSLCrossDependencyData::VulkanResourceBinding binding = psContext->psDependencies->GetVulkanResourceBinding(tname);
-		bformata(glsl, "layout(set = %d, binding = %d) ", binding.first, binding.second);
-	}
 	bcatcstr(glsl, "uniform ");
 	bcatcstr(glsl, samplerPrecision);
 	bcatcstr(glsl, samplerTypeName);
@@ -1349,7 +1528,7 @@ void ToGLSL::HandleInputRedirect(const Declaration *psDecl, const char *Precisio
 		psContext->indent++;
 
 		// Do a conditional loop. In normal cases needsLooping == 0 so this is only run once.
-		do 
+		do
 		{
 			int comp = 0;
 			psContext->AddIndentation();
@@ -1373,12 +1552,12 @@ void ToGLSL::HandleInputRedirect(const Declaration *psDecl, const char *Precisio
 					numComps = GetNumberBitsSet(psSig->ui32Mask);
 					if (psSig->eComponentType == INOUT_COMPONENT_SINT32)
 					{
-						bformata(psPhase->earlyMain, "intBitsToFloat(");
+						bformata(psPhase->earlyMain, HaveBitEncodingOps(psContext->psShader->eTargetLanguage) ? "intBitsToFloat(" : "float(");
 						hasCast = 1;
 					}
 					else if (psSig->eComponentType == INOUT_COMPONENT_UINT32)
 					{
-						bformata(psPhase->earlyMain, "uintBitsToFloat(");
+						bformata(psPhase->earlyMain, HaveBitEncodingOps(psContext->psShader->eTargetLanguage) ? "uintBitsToFloat(" : "float(");
 						hasCast = 1;
 					}
 
@@ -1426,7 +1605,6 @@ void ToGLSL::HandleInputRedirect(const Declaration *psDecl, const char *Precisio
 void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 {
 	bstring glsl = *psContext->currentGLSLString;
-	bstring extensions = psContext->extensions;
 	Shader* psShader = psContext->psShader;
 
 	switch(psDecl->eOpcode)
@@ -1439,27 +1617,37 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 			{
 				case NAME_POSITION:
 				{
-					AddBuiltinInput(psContext, psDecl, "gl_Position");
+					AddBuiltinInput(psDecl, "gl_Position");
 					break;
 				}
 				case NAME_RENDER_TARGET_ARRAY_INDEX:
 				{
-					AddBuiltinInput(psContext, psDecl, "gl_Layer");
+					AddBuiltinInput(psDecl, "gl_Layer");
+                    if (psShader->eShaderType == VERTEX_SHADER)
+                    {
+                        psContext->RequireExtension("GL_AMD_vertex_shader_layer");
+                    }
+
 					break;
 				}
 				case NAME_CLIP_DISTANCE:
 				{
-					AddBuiltinInput(psContext, psDecl, "gl_ClipDistance");
+					AddBuiltinInput(psDecl, "gl_ClipDistance");
+					break;
+				}
+				case NAME_CULL_DISTANCE:
+				{
+					AddBuiltinInput(psDecl, "gl_CullDistance");
 					break;
 				}
 				case NAME_VIEWPORT_ARRAY_INDEX:
 				{
-					AddBuiltinInput(psContext, psDecl, "gl_ViewportIndex");
+					AddBuiltinInput(psDecl, "gl_ViewportIndex");
 					break;
 				}
 				case NAME_INSTANCE_ID:
 				{
-					AddBuiltinInput(psContext, psDecl, "gl_InstanceID");
+					AddBuiltinInput(psDecl, "gl_InstanceID");
 					break;
 				}
 				case NAME_IS_FRONT_FACE:
@@ -1470,25 +1658,28 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
                         Suggests no implicit conversion for bool<->int.
                     */
 
-					AddBuiltinInput(psContext, psDecl, "(gl_FrontFacing ? 0xffffffffu : uint(0))"); // Hi Adreno.
+					if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
+						AddBuiltinInput(psDecl, "(gl_FrontFacing ? 0xffffffffu : uint(0))"); // Hi Adreno.
+					else
+						AddBuiltinInput(psDecl, "(gl_FrontFacing ? int(1) : int(0))");
 					break;
 				}
 				case NAME_SAMPLE_INDEX:
 				{
-					AddBuiltinInput(psContext, psDecl, "gl_SampleID");
+					AddBuiltinInput(psDecl, "gl_SampleID");
 					break;
 				}
 				case NAME_VERTEX_ID:
 				{
-					AddBuiltinInput(psContext, psDecl, "gl_VertexID");
+					AddBuiltinInput(psDecl, "gl_VertexID");
 					break;
 				}
 				case NAME_PRIMITIVE_ID:
 				{
 					if(psShader->eShaderType == GEOMETRY_SHADER)
-						AddBuiltinInput(psContext, psDecl, "gl_PrimitiveIDIn"); // LOL opengl.
+						AddBuiltinInput(psDecl, "gl_PrimitiveIDIn"); // LOL opengl.
 					else
-						AddBuiltinInput(psContext, psDecl, "gl_PrimitiveID");
+						AddBuiltinInput(psDecl, "gl_PrimitiveID");
 					break;
 				}
 				default:
@@ -1511,11 +1702,21 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 				case NAME_RENDER_TARGET_ARRAY_INDEX:
 				{
 					AddBuiltinOutput(psDecl, 0, "gl_Layer");
+                    if (psShader->eShaderType == VERTEX_SHADER)
+                    {
+                        psContext->RequireExtension("GL_AMD_vertex_shader_layer");
+                    }
+
 					break;
 				}
 				case NAME_CLIP_DISTANCE:
 				{
 					AddBuiltinOutput(psDecl, 0, "gl_ClipDistance");
+					break;
+				}
+				case NAME_CULL_DISTANCE:
+				{
+					AddBuiltinOutput(psDecl, 0, "gl_CullDistance");
 					break;
 				}
 				case NAME_VIEWPORT_ARRAY_INDEX:
@@ -1715,7 +1916,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 					}
 					case OPERAND_MIN_PRECISION_FLOAT_2_8:
 					{
-						Precision = "lowp";
+						Precision = EmitLowp(psContext) ? "lowp " : "mediump ";
 						break;
 					}
 					case OPERAND_MIN_PRECISION_SINT_16:
@@ -1731,8 +1932,29 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 				}
 			}
 
+			const char * Interpolation = "";
+
+			if (psShader->eShaderType == GEOMETRY_SHADER || psShader->eShaderType == HULL_SHADER || psShader->eShaderType == DOMAIN_SHADER)
+			{
+				const ShaderInfo::InOutSignature* psSignature = NULL;
+
+				psShader->sInfo.GetInputSignatureFromRegister(psDecl->asOperands[0].ui32RegisterNumber,
+					psDecl->asOperands[0].ui32CompMask,
+					&psSignature, true);
+
+				if ((psSignature != NULL) && (psSignature->eComponentType == INOUT_COMPONENT_UINT32 ||
+					psSignature->eComponentType == INOUT_COMPONENT_SINT32)) // GLSL spec requires that integer inputs always have "flat" interpolation
+				{
+					Interpolation = GetInterpolationString(INTERPOLATION_CONSTANT, psContext->psShader->eTargetLanguage);
+				}
+				else if (psContext->psDependencies) // For floats we get the interpolation that was resolved from the fragment shader input
+				{
+					Interpolation = GetInterpolationString(psContext->psDependencies->GetInterpolationMode(psDecl->asOperands[0].ui32RegisterNumber), psContext->psShader->eTargetLanguage);
+				}
+			}
+
 			DeclareInput(psContext, psDecl,
-			    "", StorageQualifier, Precision, iNumComponents, (OPERAND_INDEX_DIMENSION)psOperand->iIndexDims, inputName.c_str(), psOperand->ui32CompMask);
+			    Interpolation, StorageQualifier, Precision, iNumComponents, (OPERAND_INDEX_DIMENSION)psOperand->iIndexDims, inputName.c_str(), psOperand->ui32CompMask);
 
 			HandleInputRedirect(psDecl, Precision);
 			break;
@@ -1743,13 +1965,13 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 			{
 				case NAME_POSITION:
 				{
-					AddBuiltinInput(psContext, psDecl, "gl_FragCoord");
+					AddBuiltinInput(psDecl, "gl_FragCoord");
 					break;
 				}
                 default:
                     ASSERT(0);
                     break;
-                    
+
 			}
 			break;
 		}
@@ -1772,59 +1994,63 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 			int hasNoPerspective = psContext->psShader->eTargetLanguage <= LANG_ES_310 ? 0 : 1;
 			inputName = psContext->GetDeclaredInputName(psOperand, NULL, 1, NULL);
 
-			// If this is a SV_Target input and framebuffer fetch is enabled then skip the declaration
-			if (psShader->extensions->EXT_shader_framebuffer_fetch &&
-				psShader->eShaderType == PIXEL_SHADER &&
-				psContext->flags & HLSLCC_FLAG_SHADER_FRAMEBUFFER_FETCH)
-			{
-				if(inputName == "vs_SV_Target0")
-					break;
-			}
-
 			if (InOutSupported(psContext->psShader->eTargetLanguage))
 			{
 				StorageQualifier = "in";
 			}
+			const ShaderInfo::InOutSignature* psSignature = NULL;
 
-			switch(psDecl->value.eInterpolation)
+			psShader->sInfo.GetInputSignatureFromRegister(psDecl->asOperands[0].ui32RegisterNumber,
+				psDecl->asOperands[0].ui32CompMask,
+				&psSignature);
+
+			if (psSignature->eComponentType == INOUT_COMPONENT_UINT32 ||
+				psSignature->eComponentType == INOUT_COMPONENT_SINT32) // GLSL spec requires that integer inputs always have "flat" interpolation
 			{
-				case INTERPOLATION_CONSTANT:
+				Interpolation = GetInterpolationString(INTERPOLATION_CONSTANT, psContext->psShader->eTargetLanguage);
+			}
+			else
+			{
+				switch (psDecl->value.eInterpolation)
 				{
-					Interpolation = "flat ";
-					break;
+					case INTERPOLATION_CONSTANT:
+					{
+						Interpolation = "flat ";
+						break;
+					}
+					case INTERPOLATION_LINEAR:
+					{
+						break;
+					}
+					case INTERPOLATION_LINEAR_CENTROID:
+					{
+						Interpolation = "centroid ";
+						break;
+					}
+					case INTERPOLATION_LINEAR_NOPERSPECTIVE:
+					{
+						Interpolation = hasNoPerspective ? "noperspective " : "";
+						break;
+					}
+					case INTERPOLATION_LINEAR_NOPERSPECTIVE_CENTROID:
+					{
+						Interpolation = hasNoPerspective ? "noperspective centroid " : "centroid";
+						break;
+					}
+					case INTERPOLATION_LINEAR_SAMPLE:
+					{
+						Interpolation = hasNoPerspective ? "sample " : "";
+						break;
+					}
+					case INTERPOLATION_LINEAR_NOPERSPECTIVE_SAMPLE:
+					{
+						Interpolation = hasNoPerspective ? "noperspective sample " : "";
+						break;
+					}
+					default:
+						ASSERT(0);
+						break;
 				}
-				case INTERPOLATION_LINEAR:
-				{
-					break;
-				}
-				case INTERPOLATION_LINEAR_CENTROID:
-				{
-					Interpolation = "centroid ";
-					break;
-				}
-				case INTERPOLATION_LINEAR_NOPERSPECTIVE:
-				{
-					Interpolation = hasNoPerspective ? "noperspective " : "";
-					break;
-				}
-				case INTERPOLATION_LINEAR_NOPERSPECTIVE_CENTROID:
-				{
-					Interpolation = hasNoPerspective ? "noperspective centroid " : "centroid" ;
-					break;
-				}
-				case INTERPOLATION_LINEAR_SAMPLE:
-				{
-					Interpolation = hasNoPerspective ? "sample " : "";
-					break;
-				}
-				case INTERPOLATION_LINEAR_NOPERSPECTIVE_SAMPLE:
-				{
-					Interpolation = hasNoPerspective ? "noperspective sample " : "";
-					break;
-				}
-                default:
-                    ASSERT(0);
-                    break;
 			}
 
 			if(HavePrecisionQualifiers(psContext))
@@ -1843,7 +2069,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 					}
 					case OPERAND_MIN_PRECISION_FLOAT_2_8:
 					{
-						Precision = "lowp";
+						Precision = EmitLowp(psContext) ? "lowp " : "mediump ";
 						break;
 					}
 					case OPERAND_MIN_PRECISION_SINT_16:
@@ -1857,6 +2083,108 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 						break;
 					}
 				}
+			}
+
+			bool haveFramebufferFetch = (psShader->extensions->EXT_shader_framebuffer_fetch &&
+										 psShader->eShaderType == PIXEL_SHADER &&
+										 psContext->flags & HLSLCC_FLAG_SHADER_FRAMEBUFFER_FETCH);
+
+			// If this is a SV_Target input and framebuffer fetch is enabled, do special input declaration unless output is declared later
+			if (haveFramebufferFetch && psOperand->iPSInOut && inputName.size() == 13 && !strncmp(inputName.c_str(), "vs_SV_Target", 12))
+			{
+				bstring type = NULL;
+
+				switch (psSignature->eComponentType)
+				{
+					case INOUT_COMPONENT_UINT32:
+					{
+						if (iNumComponents > 1)
+							type = bformat("uvec%d", iNumComponents);
+						else
+							type = bformat("uint");
+						break;
+					}
+					case INOUT_COMPONENT_SINT32:
+					{
+						if (iNumComponents > 1)
+							type = bformat("ivec%d", iNumComponents);
+						else
+							type = bformat("int");
+						break;
+					}
+					case INOUT_COMPONENT_FLOAT32:
+					{
+						if (iNumComponents > 1)
+							type = bformat("vec%d", iNumComponents);
+						else
+							type = bformat("float");
+						break;
+					}
+					default:
+						ASSERT(0);
+						break;
+				}
+
+				uint32_t renderTarget = psSignature->ui32SemanticIndex;
+
+				char OutputName[512];
+				bstring oname;
+				oname = bformat("%s%s%d", psContext->outputPrefix, psSignature->semanticName.c_str(), renderTarget);
+				strncpy(OutputName, (char *)oname->data, 512);
+				bdestroy(oname);
+
+				if(WriteToFragData(psContext->psShader->eTargetLanguage))
+				{
+					if (haveFramebufferFetch)
+					{
+						bcatcstr(glsl, "#ifdef GL_EXT_shader_framebuffer_fetch\n");
+						bformata(glsl, "#define vs_%s gl_LastFragData[%d]\n", OutputName, renderTarget);
+						bcatcstr(glsl, "#else\n");
+						bformata(glsl, "#define vs_%s gl_FragData[%d]\n", OutputName, renderTarget);
+						bcatcstr(glsl, "#endif\n");
+					}
+					else
+						bformata(glsl, "#define vs_%s gl_FragData[%d]\n", OutputName, renderTarget);
+				}
+				else
+				{
+					if (!RenderTargetDeclared(renderTarget))
+					{
+						bstring layoutQualifier = bformat("");
+
+						if (HaveInOutLocationQualifier(psContext->psShader->eTargetLanguage) ||
+							HaveLimitedInOutLocationQualifier(psContext->psShader->eTargetLanguage, psContext->psShader->extensions))
+						{
+							uint32_t index = 0;
+
+							if((psContext->flags & HLSLCC_FLAG_DUAL_SOURCE_BLENDING) && DualSourceBlendSupported(psContext->psShader->eTargetLanguage))
+							{
+								if(renderTarget > 0)
+								{
+									renderTarget = 0;
+									index = 1;
+								}
+								layoutQualifier = bformat("layout(location = %d, index = %d) ", renderTarget, index);
+							}
+							else
+							{
+								layoutQualifier = bformat("layout(location = %d) ", renderTarget);
+							}
+						}
+
+						if (haveFramebufferFetch)
+						{
+							bcatcstr(glsl, "#ifdef GL_EXT_shader_framebuffer_fetch\n");
+							bformata(glsl, "%sinout %s %s %s;\n", bstr2cstr(layoutQualifier, '\0'), Precision, type->data, OutputName);
+							bcatcstr(glsl, "#else\n");
+							bformata(glsl, "%sout %s %s %s;\n", bstr2cstr(layoutQualifier, '\0'), Precision, type->data, OutputName);
+							bcatcstr(glsl, "#endif\n");
+						}
+						else
+							bformata(glsl, "%sout %s %s %s;\n", bstr2cstr(layoutQualifier, '\0'), Precision, type->data, OutputName);
+					}
+				}
+				break;
 			}
 
 			DeclareInput(psContext, psDecl,
@@ -1915,11 +2243,11 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 			{
 				if (HaveUniformBindingsAndLocations(psContext->psShader->eTargetLanguage, psContext->psShader->extensions, psContext->flags))
 					bformata(glsl, "layout(location = %d) ",ui32BindingPoint);
-					
+
 				bformata(glsl, "layout(std140) uniform ConstantBuffer%d {\n\tvec4 data[%d];\n} cb%d;\n", ui32BindingPoint,psOperand->aui32ArraySizes[1],ui32BindingPoint);
 				break;
 			}
-			
+
 			if (psCBuf->name.substr(0, 20) == "hlslcc_SubpassInput_" && psCBuf->name.length() >= 23 && !psCBuf->asVars.empty())
 			{
 				// Special case for vulkan subpass input.
@@ -1984,15 +2312,16 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 						// Munge the name so it'll get the correct function call in GLSL directly
 						sv.name.insert(0, "subpassLoad(");
 						if (isMS)
-							sv.name[sv.name.length() - 2] = ',';
-						sv.name.append(")");
+							sv.name.append(",");
+						else
+							sv.name.append(")");
 						// Also update the type name
 						sv.sType.name = sv.name;
 						sv.sType.fullName = sv.name;
 					}
 				}
 
-				// Break out so this doesn't get declared. 
+				// Break out so this doesn't get declared.
 				break;
 			}
 
@@ -2000,7 +2329,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 			{
 				// Special case for piggy-backing multiview info out
 				// This is not really a cbuffer, but if we see this being accessed, we know we need viewID
-				
+
 				// Extract numViews
 				uint32_t numViews = 0;
 				for(std::vector<ShaderVar>::const_iterator itr = psCBuf->asVars.begin(); itr != psCBuf->asVars.end(); itr++)
@@ -2015,11 +2344,11 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 				if(numViews > 0 && numViews < 10)
 				{
                     // multiview2 is required because we have built-in shaders that do eye-dependent work other than just position
-					bcatcstr(extensions, "#extension GL_OVR_multiview2 : require\n");
+					psContext->RequireExtension("GL_OVR_multiview2");
 
 					if(psShader->eShaderType == VERTEX_SHADER)
 						bformata(glsl, "layout(num_views = %d) in;\n", numViews);
-					
+
 					break; // Break out so we don't actually declare this cbuffer
 
 				}
@@ -2033,7 +2362,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 				}
 				else
 				{
-					DeclareUBOConstants(psContext, ui32BindingPoint, psCBuf, glsl);
+					DeclareUBOConstants(ui32BindingPoint, psCBuf, glsl);
 				}
 			}
 			else
@@ -2044,9 +2373,16 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 		}
 		case OPCODE_DCL_RESOURCE:
 		{
-			// Skip the location declaration on Vulkan
-			if (HaveUniformBindingsAndLocations(psContext->psShader->eTargetLanguage, psContext->psShader->extensions, psContext->flags)
-				&& ((psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) == 0))
+			psShader->aeResourceDims[psDecl->asOperands[0].ui32RegisterNumber] = psDecl->value.eResourceDimension;
+
+			// Vulkan doesn't use combined textures+samplers, so do own handling in a separate func
+			if (psContext->IsVulkan())
+			{
+				TranslateVulkanResource(psContext, psDecl);
+				break;
+			}
+
+			if (HaveUniformBindingsAndLocations(psContext->psShader->eTargetLanguage, psContext->psShader->extensions, psContext->flags))
 			{
 				// Explicit layout bindings are not currently compatible with combined texture samplers. The layout below assumes there is exactly one GLSL sampler
 				// for each HLSL texture declaration, but when combining textures+samplers, there can be multiple OGL samplers for each HLSL texture declaration.
@@ -2062,15 +2398,6 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 			{
 				case RESOURCE_DIMENSION_BUFFER:
 				{
-					if ((psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) != 0)
-					{
-						const ResourceBinding *psBinding = NULL;
-						psShader->sInfo.GetResourceFromBindingPoint(RGROUP_TEXTURE, psDecl->asOperands[0].ui32RegisterNumber, &psBinding);
-						std::string tname = psBinding->name;
-						GLSLCrossDependencyData::VulkanResourceBinding binding = psContext->psDependencies->GetVulkanResourceBinding(tname);
-						bformata(glsl, "layout(set = %d, binding = %d) ", binding.first, binding.second);
-					}
-
 					bcatcstr(glsl, "uniform ");
 					if (IsESLanguage(psContext->psShader->eTargetLanguage))
 						bcatcstr(glsl, "highp ");
@@ -2131,7 +2458,6 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
                     break;
 
 			}
-			psShader->aeResourceDims[psDecl->asOperands[0].ui32RegisterNumber] = psDecl->value.eResourceDimension;
 			break;
 		}
 		case OPCODE_DCL_OUTPUT:
@@ -2148,7 +2474,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 					AddBuiltinOutput(psDecl, 0, "gl_out[gl_InvocationID].gl_Position");
 				}
 			}
-			
+
 			if(needsDeclare)
 			{
 				AddUserOutput(psDecl);
@@ -2159,9 +2485,10 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 		{
 			uint32_t ui32Flags = psDecl->value.ui32GlobalFlags;
 
-			if(ui32Flags & GLOBAL_FLAG_FORCE_EARLY_DEPTH_STENCIL)
+			if(ui32Flags & GLOBAL_FLAG_FORCE_EARLY_DEPTH_STENCIL && psContext->psShader->eShaderType == PIXEL_SHADER)
 			{
 				bcatcstr(glsl, "layout(early_fragment_tests) in;\n");
+				psShader->sInfo.bEarlyFragmentTests = true;
 			}
 			if(!(ui32Flags & GLOBAL_FLAG_REFACTORING_ALLOWED))
 			{
@@ -2170,7 +2497,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 			}
 			if(ui32Flags & GLOBAL_FLAG_ENABLE_DOUBLE_PRECISION_FLOAT_OPS)
 			{
-				bcatcstr(extensions, "#extension GL_ARB_gpu_shader_fp64 : enable\n");
+				psContext->EnableExtension("GL_ARB_gpu_shader_fp64");
 				psShader->fp64 = 1;
 			}
 			break;
@@ -2313,8 +2640,8 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 		}
 		case OPCODE_DCL_INTERFACE:
 		{
-			const uint32_t interfaceID = psDecl->value.interface.ui32InterfaceID;
-			const uint32_t numUniforms = psDecl->value.interface.ui32ArraySize;
+			const uint32_t interfaceID = psDecl->value.iface.ui32InterfaceID;
+			const uint32_t numUniforms = psDecl->value.iface.ui32ArraySize;
 			const uint32_t ui32NumBodiesPerTable = psContext->psShader->funcPointer[interfaceID].ui32NumBodiesPerTable;
 			ShaderVar* psVar;
 			uint32_t varFound;
@@ -2339,64 +2666,94 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 		}
 		case OPCODE_CUSTOMDATA:
 		{
-			// TODO: This is only ever accessed as a float currently. Do trickery if we ever see ints accessed from an array.
-			// Walk through all the chunks we've seen in this phase.
-			ShaderPhase &sp = psShader->asPhases[psContext->currentPhase];
-			std::for_each(sp.m_ConstantArrayInfo.m_Chunks.begin(), sp.m_ConstantArrayInfo.m_Chunks.end(), [this](const std::pair<uint32_t, ConstantArrayChunk> &chunk)
+			// On Vulkan we just spew the data in uints as-is
+			if (psContext->IsVulkan())
 			{
 				bstring glsl = *psContext->currentGLSLString;
-				uint32_t componentCount = chunk.second.m_ComponentCount;
-				// Just do the declaration here and contents to earlyMain.
-				if (componentCount == 1)
-					bformata(glsl, "float ImmCB_%d_%d_%d[%d];\n", psContext->currentPhase, chunk.first, chunk.second.m_Rebase, chunk.second.m_Size);
-				else
-					bformata(glsl, "vec%d ImmCB_%d_%d_%d[%d];\n", componentCount, psContext->currentPhase, chunk.first, chunk.second.m_Rebase, chunk.second.m_Size);
-
-				bstring tgt = psContext->psShader->asPhases[psContext->currentPhase].earlyMain;
-				Declaration *psDecl = psContext->psShader->asPhases[psContext->currentPhase].m_ConstantArrayInfo.m_OrigDeclaration;
-				if (componentCount == 1)
+				bformata(glsl, "const uvec4 ImmCB_%d[] = uvec4[%d] (\n", psContext->currentPhase, psDecl->asImmediateConstBuffer.size());
+				bool isFirst = true;
+				std::for_each(psDecl->asImmediateConstBuffer.begin(), psDecl->asImmediateConstBuffer.end(), [&](const ICBVec4 &data)
 				{
-					for (uint32_t i = 0; i < chunk.second.m_Size; i++)
+					if (!isFirst)
 					{
-						float val[4] = {
-							*(float*)&psDecl->asImmediateConstBuffer[i + chunk.first].a,
-							*(float*)&psDecl->asImmediateConstBuffer[i + chunk.first].b,
-							*(float*)&psDecl->asImmediateConstBuffer[i + chunk.first].c,
-							*(float*)&psDecl->asImmediateConstBuffer[i + chunk.first].d
-						};
-						bformata(tgt, "\tImmCB_%d_%d_%d[%d] = ", psContext->currentPhase, chunk.first, chunk.second.m_Rebase, i);
-						if (fpcheck(val[chunk.second.m_Rebase]))
-							bformata(tgt, "uintBitsToFloat(uint(0x%Xu))", *(uint32_t *)&val[chunk.second.m_Rebase]);
-						else
-							HLSLcc::PrintFloat(tgt, val[chunk.second.m_Rebase]);
-						bcatcstr(tgt, ";\n");
+						bcatcstr(glsl, ",\n");
 					}
-				}
-				else
+					isFirst = false;
+					bformata(glsl, "\tuvec4(0x%X, 0x%X, 0x%X, 0x%X)", data.a, data.b, data.c, data.d);
+				});
+				bcatcstr(glsl, ");\n");
+			}
+			else
+			{
+				// TODO: This is only ever accessed as a float currently. Do trickery if we ever see ints accessed from an array.
+				// Walk through all the chunks we've seen in this phase.
+				ShaderPhase &sp = psShader->asPhases[psContext->currentPhase];
+				std::for_each(sp.m_ConstantArrayInfo.m_Chunks.begin(), sp.m_ConstantArrayInfo.m_Chunks.end(), [this](const std::pair<uint32_t, ConstantArrayChunk> &chunk)
 				{
-					for (uint32_t i = 0; i < chunk.second.m_Size; i++)
+					bstring glsl = *psContext->currentGLSLString;
+					uint32_t componentCount = chunk.second.m_ComponentCount;
+					// Just do the declaration here and contents to earlyMain.
+					if (componentCount == 1)
+						bformata(glsl, "float ImmCB_%d_%d_%d[%d];\n", psContext->currentPhase, chunk.first, chunk.second.m_Rebase, chunk.second.m_Size);
+					else
+						bformata(glsl, "vec%d ImmCB_%d_%d_%d[%d];\n", componentCount, psContext->currentPhase, chunk.first, chunk.second.m_Rebase, chunk.second.m_Size);
+
+					if (!HaveDynamicIndexing(psContext))
 					{
-						float val[4] = {
-							*(float*)&psDecl->asImmediateConstBuffer[i + chunk.first].a,
-							*(float*)&psDecl->asImmediateConstBuffer[i + chunk.first].b,
-							*(float*)&psDecl->asImmediateConstBuffer[i + chunk.first].c,
-							*(float*)&psDecl->asImmediateConstBuffer[i + chunk.first].d
-						};
-						bformata(tgt, "\tImmCB_%d_%d_%d[%d] = vec%d(", psContext->currentPhase, chunk.first, chunk.second.m_Rebase, i, componentCount);
-						for (uint32_t k = 0; k < componentCount; k++)
+						bstring name = bfromcstr("");
+						bformata(name, "ImmCB_%d_%d_%d", psContext->currentPhase, chunk.first, chunk.second.m_Rebase);
+						SHADER_VARIABLE_CLASS eClass = componentCount > 1 ? SVC_VECTOR : SVC_SCALAR;
+
+						DeclareDynamicIndexWrapper((const char *)name->data, eClass, SVT_FLOAT, 1, componentCount, chunk.second.m_Size);
+						bdestroy(name);
+					}
+
+					bstring tgt = psContext->psShader->asPhases[psContext->currentPhase].earlyMain;
+					Declaration *psDecl = psContext->psShader->asPhases[psContext->currentPhase].m_ConstantArrayInfo.m_OrigDeclaration;
+					if (componentCount == 1)
+					{
+						for (uint32_t i = 0; i < chunk.second.m_Size; i++)
 						{
-							if (k != 0)
-								bcatcstr(tgt, ", ");
-							if (fpcheck(val[k]))
-								bformata(tgt, "uintBitsToFloat(uint(0x%Xu))", *(uint32_t *)&val[k + chunk.second.m_Rebase]);
+							float val[4] = {
+								*(float*)&psDecl->asImmediateConstBuffer[i + chunk.first].a,
+								*(float*)&psDecl->asImmediateConstBuffer[i + chunk.first].b,
+								*(float*)&psDecl->asImmediateConstBuffer[i + chunk.first].c,
+								*(float*)&psDecl->asImmediateConstBuffer[i + chunk.first].d
+							};
+							bformata(tgt, "\tImmCB_%d_%d_%d[%d] = ", psContext->currentPhase, chunk.first, chunk.second.m_Rebase, i);
+							if (fpcheck(val[chunk.second.m_Rebase]) && HaveBitEncodingOps(psContext->psShader->eTargetLanguage))
+								bformata(tgt, "uintBitsToFloat(uint(0x%Xu))", *(uint32_t *)&val[chunk.second.m_Rebase]);
 							else
-								HLSLcc::PrintFloat(tgt, val[k + chunk.second.m_Rebase]);
+								HLSLcc::PrintFloat(tgt, val[chunk.second.m_Rebase]);
+							bcatcstr(tgt, ";\n");
 						}
-						bcatcstr(tgt, ");\n");
 					}
-				}
+					else
+					{
+						for (uint32_t i = 0; i < chunk.second.m_Size; i++)
+						{
+							float val[4] = {
+								*(float*)&psDecl->asImmediateConstBuffer[i + chunk.first].a,
+								*(float*)&psDecl->asImmediateConstBuffer[i + chunk.first].b,
+								*(float*)&psDecl->asImmediateConstBuffer[i + chunk.first].c,
+								*(float*)&psDecl->asImmediateConstBuffer[i + chunk.first].d
+							};
+							bformata(tgt, "\tImmCB_%d_%d_%d[%d] = vec%d(", psContext->currentPhase, chunk.first, chunk.second.m_Rebase, i, componentCount);
+							for (uint32_t k = 0; k < componentCount; k++)
+							{
+								if (k != 0)
+									bcatcstr(tgt, ", ");
+								if (fpcheck(val[k]) && HaveBitEncodingOps(psContext->psShader->eTargetLanguage))
+									bformata(tgt, "uintBitsToFloat(uint(0x%Xu))", *(uint32_t *)&val[k + chunk.second.m_Rebase]);
+								else
+									HLSLcc::PrintFloat(tgt, val[k + chunk.second.m_Rebase]);
+							}
+							bcatcstr(tgt, ");\n");
+						}
+					}
 
-			});
+				});
+			}
 
 
 
@@ -2468,7 +2825,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
                     default:
                         ASSERT(0);
                         break;
-                        
+
 				}
 
 				if (HavePrecisionQualifiers(psContext))
@@ -2490,7 +2847,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 					}
 					case MIN_PRECISION_FLOAT_2_8:
 					{
-						Precision = "lowp ";
+						Precision = EmitLowp(psContext) ? "lowp " : "mediump ";
 						break;
 					}
 					}
@@ -2524,7 +2881,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 
 					if ((psSig->ui32Mask & destMask) == 0)
 						continue; // Skip dummy writes (vec2 texcoords get filled to vec4 with zeroes etc)
-					
+
 					while ((psSig->ui32Mask & (1 << rebase)) == 0)
 						rebase++;
 
@@ -2672,6 +3029,20 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 		}
 		case OPCODE_DCL_SAMPLER:
 		{
+			if (psContext->IsVulkan())
+			{
+				ResourceBinding *pRes = NULL;
+				psContext->psShader->sInfo.GetResourceFromBindingPoint(RGROUP_SAMPLER, psDecl->asOperands[0].ui32RegisterNumber, (const ResourceBinding **)&pRes);
+				ASSERT(pRes != NULL);
+				std::string name = ResourceName(psContext, RGROUP_SAMPLER, psDecl->asOperands[0].ui32RegisterNumber, 0);
+				const char *samplerPrecision = GetSamplerPrecision(psContext, pRes ? pRes->ePrecision : REFLECT_RESOURCE_PRECISION_UNKNOWN);
+
+				GLSLCrossDependencyData::VulkanResourceBinding binding = psContext->psDependencies->GetVulkanResourceBinding(name);
+				const char *samplerType = psDecl->value.eSamplerMode == D3D10_SB_SAMPLER_MODE_COMPARISON ? "samplerShadow" : "sampler";
+				bformata(glsl, "layout(set = %d, binding = %d) uniform %s %s %s;\n", binding.first, binding.second, samplerPrecision, samplerType, name.c_str());
+				// Store the sampler mode to ShaderInfo, it's needed when we use the sampler
+				pRes->m_SamplerMode = psDecl->value.eSamplerMode;
+			}
 			break;
 		}
 		case OPCODE_DCL_HS_MAX_TESSFACTOR:
@@ -2815,7 +3186,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
                 default:
                     ASSERT(0);
                     break;
-                    
+
 			}
 			TranslateOperand(&psDecl->asOperands[0], TO_FLAG_NONE);
 			bcatcstr(glsl, ";\n");
@@ -2827,7 +3198,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 			const bool avoidAtomicCounter = (psContext->flags & HLSLCC_FLAG_AVOID_SHADER_ATOMIC_COUNTERS) != 0;
 			if(psDecl->sUAV.bCounter)
 			{
-				if (isVulkan) 
+				if (isVulkan)
 				{
 					std::string uavname = ResourceName(psContext, RGROUP_UAV, psDecl->asOperands[0].ui32RegisterNumber, 0);
 					GLSLCrossDependencyData::VulkanResourceBinding uavBinding = psContext->psDependencies->GetVulkanResourceBinding(uavname, true);
@@ -2961,7 +3332,7 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
 	}
 }
 
-bool ToGLSL::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::InOutSignature *sig, std::string &result, uint32_t *pui32IgnoreSwizzle, bool isIndexed, bool isInput, bool *outSkipPrefix)
+bool ToGLSL::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::InOutSignature *sig, std::string &result, uint32_t *pui32IgnoreSwizzle, bool isIndexed, bool isInput, bool *outSkipPrefix, int *iIgnoreRedirect)
 {
 	ASSERT(sig != NULL);
 	if (psContext->psShader->eShaderType == HULL_SHADER && sig->semanticName == "SV_TessFactor")
@@ -3000,10 +3371,12 @@ bool ToGLSL::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::In
 			*pui32IgnoreSwizzle = 1;
 		return true;
 	case NAME_CLIP_DISTANCE:
+	case NAME_CULL_DISTANCE:
 		{
+		const char* glName = sig->eSystemValueType == NAME_CLIP_DISTANCE ? "Clip" : "Cull";
 		// This is always routed through temp
 		std::ostringstream oss;
-		oss << "phase" << psContext->currentPhase << "_glClipDistance" << sig->ui32SemanticIndex;
+		oss << "phase" << psContext->currentPhase << "_gl" << glName << "Distance" << sig->ui32SemanticIndex;
 		result = oss.str();
 		return true;
 		}
@@ -3029,7 +3402,10 @@ bool ToGLSL::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::In
 			*pui32IgnoreSwizzle = 1;
 		return true;
 	case NAME_IS_FRONT_FACE:
-		result = "(gl_FrontFacing ? 0xffffffffu : uint(0))";
+		if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
+			result = "(gl_FrontFacing ? 0xffffffffu : uint(0))";
+		else
+			result = "(gl_FrontFacing ? int(1) : int(0))";
 		if (pui32IgnoreSwizzle)
 			*pui32IgnoreSwizzle = 1;
 		return true;

@@ -451,15 +451,23 @@ void HLSLcc::DataTypeAnalysis::SetDataTypes(HLSLCrossCompilerContext* psContext,
 				break;
 
 			case OPCODE_RESINFO:
-			{
-								   if (psInst->eResInfoReturnType != RESINFO_INSTRUCTION_RETURN_UINT)
-									   MarkAllOperandsAs(psInst, SVT_FLOAT, aeTempVecType);
-								   break;
-			}
+				// Operand 0 depends on the return type declaration, op 1 is always uint
+				MarkOperandAs(&psInst->asOperands[1], SVT_UINT, aeTempVecType);
+				switch (psInst->eResInfoReturnType)
+				{
+				default:
+				case RESINFO_INSTRUCTION_RETURN_FLOAT:
+				case RESINFO_INSTRUCTION_RETURN_RCPFLOAT:
+					MarkOperandAs(&psInst->asOperands[0], SVT_FLOAT, aeTempVecType);
+					break;
+				case RESINFO_INSTRUCTION_RETURN_UINT:
+					MarkOperandAs(&psInst->asOperands[0], SVT_UINT, aeTempVecType);
+					break;
+				}
 
 			case OPCODE_SAMPLE_INFO:
-				// TODO decode the _uint flag
-				MarkOperandAs(&psInst->asOperands[0], SVT_FLOAT, aeTempVecType);
+				// Sample_info uses the same RESINFO_RETURN_TYPE for storage. 0 = float, 1 = uint.
+				MarkOperandAs(&psInst->asOperands[0], psInst->eResInfoReturnType == RESINFO_INSTRUCTION_RETURN_FLOAT ? SVT_FLOAT : SVT_UINT, aeTempVecType);
 				break;
 
 			case OPCODE_SAMPLE_POS:
@@ -469,6 +477,7 @@ void HLSLcc::DataTypeAnalysis::SetDataTypes(HLSLCrossCompilerContext* psContext,
 
 			case OPCODE_LD_UAV_TYPED:
 				// translates to gvec4 loadImage(gimage i, ivec p).
+                MarkOperandAs(&psInst->asOperands[0], SVT_INT, aeTempVecType);
 				MarkOperandAs(&psInst->asOperands[1], SVT_INT, aeTempVecType); // ivec p
 				break;
 
@@ -507,9 +516,13 @@ void HLSLcc::DataTypeAnalysis::SetDataTypes(HLSLCrossCompilerContext* psContext,
 				break;
 
 			case OPCODE_F32TOF16:
+				MarkOperandAs(&psInst->asOperands[0], SVT_UINT, aeTempVecType);
+				MarkOperandAs(&psInst->asOperands[1], SVT_FLOAT, aeTempVecType);
+				break;
+
 			case OPCODE_F16TOF32:
-				// TODO
-				ASSERT(0);
+				MarkOperandAs(&psInst->asOperands[0], SVT_FLOAT, aeTempVecType);
+				MarkOperandAs(&psInst->asOperands[1], SVT_UINT, aeTempVecType);
 				break;
 
 

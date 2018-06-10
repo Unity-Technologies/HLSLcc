@@ -25,10 +25,10 @@ static void PrintStructDeclaration(HLSLCrossCompilerContext *psContext, bstring 
 
 	bformata(glsl, "struct %s\n{\n", sname.c_str());
 	psContext->indent++;
-	std::for_each(d.m_Members.begin(), d.m_Members.end(), [&psContext, &glsl](std::string &mem)
+	std::for_each(d.m_Members.begin(), d.m_Members.end(), [&psContext, &glsl](const MemberDefinitions::value_type &mem)
 	{
 		psContext->AddIndentation();
-		bcatcstr(glsl, mem.c_str());
+		bcatcstr(glsl, mem.second.c_str());
 		bcatcstr(glsl, ";\n");
 	});
 
@@ -36,10 +36,10 @@ static void PrintStructDeclaration(HLSLCrossCompilerContext *psContext, bstring 
 	bcatcstr(glsl, "};\n\n");
 }
 
-void ToMetal::PrintStructDeclarations(StructDefinitions &defs)
+void ToMetal::PrintStructDeclarations(StructDefinitions &defs, const char *name)
 {
 	bstring glsl = *psContext->currentGLSLString;
-	StructDefinition &args = defs[""];
+	StructDefinition &args = defs[name];
 	std::for_each(args.m_Dependencies.begin(), args.m_Dependencies.end(), [this, glsl, &defs](std::string &sname)
 	{
 		PrintStructDeclaration(psContext, glsl, sname, defs);
@@ -47,11 +47,40 @@ void ToMetal::PrintStructDeclarations(StructDefinitions &defs)
 
 }
 
+static const char * GetPhaseFuncName(SHADER_PHASE_TYPE eType)
+{
+	switch (eType)
+	{
+	default:
+	case MAIN_PHASE: return "";
+	case HS_GLOBAL_DECL_PHASE: return "hs_global_decls";
+	case HS_FORK_PHASE: return "fork_phase";
+	case HS_CTRL_POINT_PHASE: return "control_point_phase";
+	case HS_JOIN_PHASE: return "join_phase";
+	}
+}
+
+static void DoHullShaderPassthrough(HLSLCrossCompilerContext *psContext)
+{
+	uint32_t i;
+	bstring glsl = *psContext->currentGLSLString;
+
+	for (i = 0; i < psContext->psShader->sInfo.psInputSignatures.size(); i++)
+	{
+		const ShaderInfo::InOutSignature *psSig = &psContext->psShader->sInfo.psInputSignatures[i];
+
+		psContext->AddIndentation();
+		bformata(glsl, "%s%s%d = %scp[controlPointID].%s%d;\n", psContext->outputPrefix, psSig->semanticName.c_str(), psSig->ui32SemanticIndex, psContext->inputPrefix, psSig->semanticName.c_str(), psSig->ui32SemanticIndex);
+	}
+}
+
 bool ToMetal::Translate()
 {
 	bstring glsl;
 	uint32_t i;
 	Shader* psShader = psContext->psShader;
+	uint32_t ui32Phase;
+
 	psContext->psTranslator = this;
 
 	SetIOPrefixes();
@@ -79,35 +108,261 @@ bool ToMetal::Translate()
 
 	psContext->ClearDependencyData();
 
+	const SHADER_PHASE_TYPE ePhaseFuncCallOrder[3] = { HS_CTRL_POINT_PHASE, HS_FORK_PHASE, HS_JOIN_PHASE };
+	uint32_t ui32PhaseCallIndex;
+	int hasControlPointPhase = 0;
+
+	const int maxThreadsPerThreadGroup = 32;
+	int numPatchesInThreadGroup = 0;
+	bool hasControlPoint = false;
+	bool hasPatchConstant = false;
+	std::string tessVertexFunctionArguments;
+
+	if ((psShader->eShaderType == HULL_SHADER || psShader->eShaderType == DOMAIN_SHADER) && (psContext->flags & HLSLCC_FLAG_METAL_TESSELLATION) != 0)
+	{
+		if (psContext->psDependencies)
+		{
+			m_StructDefinitions[""].m_Members = psContext->psDependencies->m_SharedFunctionMembers;
+			m_TextureSlots = psContext->psDependencies->m_SharedTextureSlots;
+			m_SamplerSlots = psContext->psDependencies->m_SharedSamplerSlots;
+			m_BufferSlots = psContext->psDependencies->m_SharedBufferSlots;
+			hasControlPoint = psContext->psDependencies->hasControlPoint;
+			hasPatchConstant = psContext->psDependencies->hasPatchConstant;
+		}
+	}
+
 	ClampPartialPrecisions();
 
-	ShaderPhase &phase = psShader->asPhases[0];
-	phase.UnvectorizeImmMoves();
-	psContext->DoDataTypeAnalysis(&phase);
-	phase.ResolveUAVProperties();
-	ReserveUAVBindingSlots(&phase); // TODO: unify slot allocation code between gl/metal/vulkan
-	phase.PruneConstArrays();
-	HLSLcc::DoLoopTransform(phase);
+	for (ui32Phase = 0; ui32Phase < psShader->asPhases.size(); ui32Phase++)
+	{
+		ShaderPhase &phase = psShader->asPhases[ui32Phase];
+		phase.UnvectorizeImmMoves();
+		psContext->DoDataTypeAnalysis(&phase);
+		phase.ResolveUAVProperties();
+		ReserveUAVBindingSlots(&phase); // TODO: unify slot allocation code between gl/metal/vulkan
+		HLSLcc::DoLoopTransform(psContext, phase);
+	}
 
 	psShader->PruneTempRegisters();
 
-	bcatcstr(glsl, "#include <metal_stdlib>\n#include <metal_texture>\nusing namespace metal;\n");
+	//Special case. Can have multiple phases.
+	if(psShader->eShaderType == HULL_SHADER)
+	{
+		psShader->ConsolidateHullTempVars();
 
-	for (i = 0; i < psShader->asPhases[0].psDecl.size(); ++i)
-		TranslateDeclaration(&psShader->asPhases[0].psDecl[i]);
+		// Find out if we have a passthrough hull shader
+		for (ui32Phase = 2; ui32Phase < psShader->asPhases.size(); ui32Phase++)
+		{
+			if (psShader->asPhases[ui32Phase].ePhase == HS_CTRL_POINT_PHASE)
+				hasControlPointPhase = 1;
+		}
+	}
 
-    // Output default implementations for framebuffer index remap if needed
-    if(m_NeedFBOutputRemapDecl)
-        bcatcstr(glsl, "#ifndef XLT_REMAP_O\n#define XLT_REMAP_O {0, 1, 2, 3, 4, 5, 6, 7}\n#endif\nconstexpr constant uint xlt_remap_o[] = XLT_REMAP_O;\n");
-    if(m_NeedFBInputRemapDecl)
-        bcatcstr(glsl, "#ifndef XLT_REMAP_I\n#define XLT_REMAP_I {0, 1, 2, 3, 4, 5, 6, 7}\n#endif\nconstexpr constant uint xlt_remap_i[] = XLT_REMAP_I;\n");
-    
-    DeclareClipPlanes(&psShader->asPhases[0].psDecl[0], psShader->asPhases[0].psDecl.size());
-	GenerateTexturesReflection(&psContext->m_Reflection);
+	// Hull and Domain shaders get merged into vertex shader output
+	if (!(psShader->eShaderType == HULL_SHADER || psShader->eShaderType == DOMAIN_SHADER))
+	{
+		if (psContext->flags & HLSLCC_FLAG_DISABLE_FASTMATH)
+			bcatcstr(glsl, "#define UNITY_DISABLE_FASTMATH\n");
+		bcatcstr(glsl, "#include <metal_stdlib>\n#include <metal_texture>\nusing namespace metal;\n");
+		bcatcstr(glsl, "\n#if !(__HAVE_FMA__)\n#define fma(a,b,c) ((a) * (b) + (c))\n#endif\n\n");
+	}
+
+	if (psShader->eShaderType == HULL_SHADER)
+	{
+		psContext->indent++;
+
+		// Phase 1 is always the global decls phase, no instructions
+		for(i=0; i < psShader->asPhases[1].psDecl.size(); ++i)
+		{
+			TranslateDeclaration(&psShader->asPhases[1].psDecl[i]);
+		}
+
+		if (hasControlPointPhase == 0)
+		{
+			DeclareHullShaderPassthrough();
+		}
+
+		for(ui32PhaseCallIndex=0; ui32PhaseCallIndex<3; ui32PhaseCallIndex++)
+		{
+			for (ui32Phase = 2; ui32Phase < psShader->asPhases.size(); ui32Phase++)
+			{
+				ShaderPhase *psPhase = &psShader->asPhases[ui32Phase];
+				if (psPhase->ePhase != ePhaseFuncCallOrder[ui32PhaseCallIndex])
+					continue;
+				psContext->currentPhase = ui32Phase;
+
+#ifdef _DEBUG
+				// bformata(glsl, "//%s declarations\n", GetPhaseFuncName(psPhase->ePhase));
+#endif
+				for (i = 0; i < psPhase->psDecl.size(); ++i)
+				{
+					TranslateDeclaration(&psPhase->psDecl[i]);
+				}
+			}
+		}
+
+		psContext->indent--;
+
+		numPatchesInThreadGroup = maxThreadsPerThreadGroup / std::max(psShader->sInfo.ui32TessInputControlPointCount, psShader->sInfo.ui32TessOutputControlPointCount);
+	}
+	else
+	{
+		for (i = 0; i < psShader->asPhases[0].psDecl.size(); ++i)
+			TranslateDeclaration(&psShader->asPhases[0].psDecl[i]);
+
+		// Output default implementations for framebuffer index remap if needed
+		if (m_NeedFBOutputRemapDecl)
+			bcatcstr(glsl, "#ifndef XLT_REMAP_O\n\t#define XLT_REMAP_O {0, 1, 2, 3, 4, 5, 6, 7}\n#endif\nconstexpr constant uint xlt_remap_o[] = XLT_REMAP_O;\n");
+		if (m_NeedFBInputRemapDecl)
+			bcatcstr(glsl, "#ifndef XLT_REMAP_I\n\t#define XLT_REMAP_I {0, 1, 2, 3, 4, 5, 6, 7}\n#endif\nconstexpr constant uint xlt_remap_i[] = XLT_REMAP_I;\n");
+
+		DeclareClipPlanes(&psShader->asPhases[0].psDecl[0], psShader->asPhases[0].psDecl.size());
+		GenerateTexturesReflection(&psContext->m_Reflection);
+	}
+
+	if (psShader->eShaderType == HULL_SHADER)
+	{
+		psContext->currentPhase = MAIN_PHASE;
+
+		if (m_StructDefinitions["Mtl_ControlPoint"].m_Members.size() > 0)
+		{
+			hasControlPoint = true;
+
+			m_StructDefinitions["Mtl_ControlPoint"].m_Dependencies.push_back("Mtl_ControlPoint");
+			m_StructDefinitions["Mtl_ControlPointIn"].m_Dependencies.push_back("Mtl_ControlPointIn");
+			PrintStructDeclarations(m_StructDefinitions, "Mtl_ControlPoint");
+			PrintStructDeclarations(m_StructDefinitions, "Mtl_ControlPointIn");
+		}
+
+		if (m_StructDefinitions["Mtl_PatchConstant"].m_Members.size() > 0)
+		{
+			hasPatchConstant = true;
+
+			m_StructDefinitions["Mtl_PatchConstant"].m_Dependencies.push_back("Mtl_PatchConstant");
+			m_StructDefinitions["Mtl_PatchConstantIn"].m_Dependencies.push_back("Mtl_PatchConstantIn");
+			PrintStructDeclarations(m_StructDefinitions, "Mtl_PatchConstant");
+			PrintStructDeclarations(m_StructDefinitions, "Mtl_PatchConstantIn");
+		}
+
+		m_StructDefinitions["Mtl_KernelPatchInfo"].m_Members.push_back(std::make_pair("numPatches", "uint numPatches"));
+		m_StructDefinitions["Mtl_KernelPatchInfo"].m_Members.push_back(std::make_pair("numControlPointsPerPatch", "ushort numControlPointsPerPatch"));
+
+		if (m_StructDefinitions["Mtl_KernelPatchInfo"].m_Members.size() > 0)
+		{
+			m_StructDefinitions["Mtl_KernelPatchInfo"].m_Dependencies.push_back("Mtl_KernelPatchInfo");
+			PrintStructDeclarations(m_StructDefinitions, "Mtl_KernelPatchInfo");
+		}
+
+		if (m_StructDefinitions[GetInputStructName()].m_Members.size() > 0)
+		{
+			m_StructDefinitions[GetInputStructName()].m_Dependencies.push_back(GetInputStructName());
+
+			// Hack, we're reusing Mtl_VertexOut as an hull shader input array, so no need to declare original contents
+			m_StructDefinitions[GetInputStructName()].m_Members.clear();
+
+			bstring vertexOut = bfromcstr("");
+			bformata(vertexOut, "Mtl_VertexOut cp[%d]", psShader->sInfo.ui32TessOutputControlPointCount);
+			m_StructDefinitions[GetInputStructName()].m_Members.push_back(std::make_pair("cp", (const char *) vertexOut->data));
+			bdestroy(vertexOut);
+		}
+
+		if(psContext->psDependencies)
+		{
+			for (auto itr = psContext->psDependencies->m_SharedFunctionMembers.begin(); itr != psContext->psDependencies->m_SharedFunctionMembers.end(); itr++)
+			{
+				tessVertexFunctionArguments += itr->first.c_str();
+				tessVertexFunctionArguments += ", ";
+			}
+		}
+	}
+
+	if (psShader->eShaderType == DOMAIN_SHADER)
+	{
+		// For preserving data layout, reuse Mtl_ControlPoint/Mtl_PatchConstant from hull shader
+		if (hasControlPoint)
+			m_StructDefinitions[GetInputStructName()].m_Members.push_back(std::make_pair("cp", "patch_control_point<Mtl_ControlPointIn> cp"));
+		if (hasPatchConstant)
+			m_StructDefinitions[GetInputStructName()].m_Members.push_back(std::make_pair("patch", "Mtl_PatchConstantIn patch"));
+	}
+
+	if ((psShader->eShaderType == VERTEX_SHADER || psShader->eShaderType == HULL_SHADER || psShader->eShaderType == DOMAIN_SHADER) && (psContext->flags & HLSLCC_FLAG_METAL_TESSELLATION) != 0)
+	{
+		if (psContext->psDependencies)
+		{
+			psContext->psDependencies->m_SharedFunctionMembers = m_StructDefinitions[""].m_Members;
+			psContext->psDependencies->m_SharedTextureSlots = m_TextureSlots;
+			psContext->psDependencies->m_SharedTextureSlots.SaveTotalShaderStageAllocationsCount();
+			psContext->psDependencies->m_SharedSamplerSlots = m_SamplerSlots;
+			psContext->psDependencies->m_SharedSamplerSlots.SaveTotalShaderStageAllocationsCount();
+			psContext->psDependencies->m_SharedBufferSlots = m_BufferSlots;
+			psContext->psDependencies->m_SharedBufferSlots.SaveTotalShaderStageAllocationsCount();
+		}
+	}
 
 	if (m_StructDefinitions[GetInputStructName()].m_Members.size() > 0)
 	{
-		m_StructDefinitions[""].m_Members.push_back(GetInputStructName() + " input [[ stage_in ]]");
+		if (psShader->eShaderType == HULL_SHADER)
+		{
+			m_StructDefinitions[""].m_Members.push_back(std::make_pair("vertexInput", "Mtl_VertexIn vertexInput [[ stage_in ]]"));
+			m_StructDefinitions[""].m_Members.push_back(std::make_pair("tID", "uint2 tID [[ thread_position_in_grid ]]"));
+			m_StructDefinitions[""].m_Members.push_back(std::make_pair("groupID", "ushort2 groupID [[ threadgroup_position_in_grid ]]"));
+
+			bstring buffer = bfromcstr("");
+			uint32_t slot = 0;
+
+			if (hasControlPoint)
+			{
+				slot = m_BufferSlots.GetBindingSlot(0xffff - 1, BindingSlotAllocator::ConstantBuffer);
+				bformata(buffer, "device Mtl_ControlPoint *controlPoints [[ buffer(%d) ]]", slot);
+				m_StructDefinitions[""].m_Members.push_back(std::make_pair("controlPoints", (const char *) buffer->data));
+				btrunc(buffer, 0);
+			}
+
+			if (hasPatchConstant)
+			{
+				slot = m_BufferSlots.GetBindingSlot(0xffff - 2, BindingSlotAllocator::ConstantBuffer);
+				bformata(buffer, "device Mtl_PatchConstant *patchConstants [[ buffer(%d) ]]", slot);
+				m_StructDefinitions[""].m_Members.push_back(std::make_pair("patchConstants", (const char *) buffer->data));
+				btrunc(buffer, 0);
+			}
+
+			slot = m_BufferSlots.GetBindingSlot(0xffff - 3, BindingSlotAllocator::ConstantBuffer);
+			bformata(buffer, "device %s *tessFactors [[ buffer(%d) ]]", psShader->sInfo.eTessDomain == TESSELLATOR_DOMAIN_QUAD ? "MTLQuadTessellationFactorsHalf" : "MTLTriangleTessellationFactorsHalf", slot);
+			m_StructDefinitions[""].m_Members.push_back(std::make_pair("tessFactors", (const char *) buffer->data));
+			btrunc(buffer, 0);
+
+			slot = m_BufferSlots.GetBindingSlot(0xffff - 4, BindingSlotAllocator::ConstantBuffer);
+			bformata(buffer, "constant Mtl_KernelPatchInfo &patchInfo [[ buffer(%d) ]]", slot);
+			m_StructDefinitions[""].m_Members.push_back(std::make_pair("patchInfo", (const char *) buffer->data));
+			btrunc(buffer, 0);
+
+			bdestroy(buffer);
+		}
+		else if (psShader->eShaderType == VERTEX_SHADER && (psContext->flags & HLSLCC_FLAG_METAL_TESSELLATION) != 0)
+		{
+			m_StructDefinitions[""].m_Members.push_back(std::make_pair("input", GetInputStructName() + " input"));
+		}
+		else
+		{
+			m_StructDefinitions[""].m_Members.push_back(std::make_pair("input", GetInputStructName() + " input [[ stage_in ]]"));
+		}
+
+		if ((psShader->eShaderType == VERTEX_SHADER || psShader->eShaderType == HULL_SHADER) && (psContext->flags & HLSLCC_FLAG_METAL_TESSELLATION) != 0)
+		{
+			// m_StructDefinitions is inherited between tessellation shader stages but some builtins need exceptions
+			std::for_each(m_StructDefinitions[""].m_Members.begin(), m_StructDefinitions[""].m_Members.end(), [&psShader](MemberDefinitions::value_type &mem)
+			{
+				if (mem.first == "mtl_InstanceID")
+				{
+					if (psShader->eShaderType == VERTEX_SHADER)
+						mem.second.assign("uint mtl_InstanceID");
+					else if (psShader->eShaderType == HULL_SHADER)
+						mem.second.assign("// mtl_InstanceID passed through groupID");
+				}
+			});
+
+		}
+
 		m_StructDefinitions[""].m_Dependencies.push_back(GetInputStructName());
 	}
 
@@ -123,55 +378,285 @@ bool ToMetal::Translate()
 
 	psContext->currentGLSLString = &bodyglsl;
 
+	bool popPragmaDiagnostic = false;
+	if (psShader->eShaderType == HULL_SHADER || psShader->eShaderType == DOMAIN_SHADER)
+	{
+		popPragmaDiagnostic = true;
+
+		bcatcstr(bodyglsl, "#pragma clang diagnostic push\n");
+		bcatcstr(bodyglsl, "#pragma clang diagnostic ignored \"-Wunused-parameter\"\n");
+	}
+
 	switch (psShader->eShaderType)
 	{
 		case VERTEX_SHADER:
-			bcatcstr(bodyglsl, "vertex Mtl_VertexOut xlatMtlMain(\n");
+			if ((psContext->flags & HLSLCC_FLAG_METAL_TESSELLATION) == 0)
+				bcatcstr(bodyglsl, "vertex Mtl_VertexOut xlatMtlMain(\n");
+			else
+				bcatcstr(bodyglsl, "static Mtl_VertexOut vertexFunction(\n");
 			break;
 		case PIXEL_SHADER:
+			if (psShader->sInfo.bEarlyFragmentTests)
+				bcatcstr(bodyglsl, "[[early_fragment_tests]]\n");
 			bcatcstr(bodyglsl, "fragment Mtl_FragmentOut xlatMtlMain(\n");
 			break;
 		case COMPUTE_SHADER:
 			bcatcstr(bodyglsl, "kernel void computeMain(\n");
 			break;
+		case HULL_SHADER:
+			bcatcstr(bodyglsl, "kernel void patchKernel(\n");
+			break;
+		case DOMAIN_SHADER:
+		{
+			const char *patchType = psShader->sInfo.eTessDomain == TESSELLATOR_DOMAIN_QUAD ? "quad" : "triangle";
+			uint32_t patchCount = psShader->sInfo.ui32TessOutputControlPointCount;
+			bformata(bodyglsl, "[[patch(%s, %d)]] vertex Mtl_VertexOutPostTess xlatMtlMain(\n", patchType, patchCount);
+			break;
+		}
 		default:
 			// Not supported
 			ASSERT(0);
 			return false;
 	}
+
 	psContext->indent++;
-	for (auto itr = m_StructDefinitions[""].m_Members.begin(); itr != m_StructDefinitions[""].m_Members.end(); itr++)
+	for (auto itr = m_StructDefinitions[""].m_Members.begin(); ;)
 	{
+		if (itr == m_StructDefinitions[""].m_Members.end())
+			break;
+
 		psContext->AddIndentation();
-		bcatcstr(bodyglsl, itr->c_str());
-		if (itr + 1 != m_StructDefinitions[""].m_Members.end())
+		bcatcstr(bodyglsl, itr->second.c_str());
+
+		itr++;
+		if (itr != m_StructDefinitions[""].m_Members.end())
 			bcatcstr(bodyglsl, ",\n");
 	}
 
 	bcatcstr(bodyglsl, ")\n{\n");
+
+	if (popPragmaDiagnostic)
+		bcatcstr(bodyglsl, "#pragma clang diagnostic pop\n");
+
 	if (psShader->eShaderType != COMPUTE_SHADER)
 	{
-		psContext->AddIndentation();
-		bcatcstr(bodyglsl, GetOutputStructName().c_str());
-		bcatcstr(bodyglsl, " output;\n");
+		if (m_StructDefinitions[GetOutputStructName().c_str()].m_Members.size() > 0)
+		{
+			psContext->AddIndentation();
+			bcatcstr(bodyglsl, GetOutputStructName().c_str());
+			bcatcstr(bodyglsl, " output;\n");
+		}
 	}
 
-	if (psContext->psShader->asPhases[0].earlyMain->slen > 1)
+	if (psShader->eShaderType == HULL_SHADER)
 	{
-#ifdef _DEBUG
+		if (hasPatchConstant)
+		{
+			psContext->AddIndentation();
+			bcatcstr(bodyglsl, "Mtl_PatchConstant patch;\n");
+		}
+
 		psContext->AddIndentation();
-		bcatcstr(bodyglsl, "//--- Start Early Main ---\n");
-#endif
-		bconcat(bodyglsl, psContext->psShader->asPhases[0].earlyMain);
-#ifdef _DEBUG
+		bformata(bodyglsl, "const uint numPatchesInThreadGroup = %d;\n", numPatchesInThreadGroup);  // Hardcoded because of threadgroup array below
 		psContext->AddIndentation();
-		bcatcstr(bodyglsl, "//--- End Early Main ---\n");
-#endif
+		bcatcstr(bodyglsl, "const uint patchID = (tID.x / patchInfo.numControlPointsPerPatch);\n");
+		psContext->AddIndentation();
+		bcatcstr(bodyglsl, "const bool patchValid = (patchID < patchInfo.numPatches);\n");
+
+		psContext->AddIndentation();
+		bcatcstr(bodyglsl, "const uint mtl_InstanceID = groupID.y;\n");
+		psContext->AddIndentation();
+		bcatcstr(bodyglsl, "const uint internalPatchID = mtl_InstanceID * patchInfo.numPatches + patchID;\n");
+		psContext->AddIndentation();
+		bcatcstr(bodyglsl, "const uint patchIDInThreadGroup = (patchID % numPatchesInThreadGroup);\n");
+
+		psContext->AddIndentation();
+		bcatcstr(bodyglsl, "const uint controlPointID = (tID.x % patchInfo.numControlPointsPerPatch);\n");
+		psContext->AddIndentation();
+		bcatcstr(bodyglsl, "const uint internalControlPointID = (mtl_InstanceID * (patchInfo.numControlPointsPerPatch * patchInfo.numPatches)) + tID.x;\n");
+
+		psContext->AddIndentation();
+		bformata(bodyglsl, "threadgroup %s inputGroup[numPatchesInThreadGroup];\n", GetInputStructName().c_str());
+		psContext->AddIndentation();
+		bformata(bodyglsl, "threadgroup %s &input = inputGroup[patchIDInThreadGroup];\n", GetInputStructName().c_str());
+
+		psContext->AddIndentation();
+		std::string tessFactorBufferType = psShader->sInfo.eTessDomain == TESSELLATOR_DOMAIN_QUAD ? "MTLQuadTessellationFactorsHalf" : "MTLTriangleTessellationFactorsHalf";
+		bformata(bodyglsl, "%s tessFactor;\n", tessFactorBufferType.c_str());
 	}
 
-	for (i = 0; i < psShader->asPhases[0].psInst.size(); ++i)
+	// There are cases when there are no control point phases and we have to do passthrough
+	if (psShader->eShaderType == HULL_SHADER && hasControlPointPhase == 0)
 	{
-		TranslateInstruction(&psShader->asPhases[0].psInst[i]);
+		psContext->AddIndentation();
+		bcatcstr(bodyglsl, "if (patchValid) {\n");
+		psContext->indent++;
+
+		// Passthrough control point phase, run the rest only once per patch
+		psContext->AddIndentation();
+		bformata(bodyglsl, "input.cp[controlPointID] = vertexFunction(%svertexInput);\n", tessVertexFunctionArguments.c_str());
+
+		DoHullShaderPassthrough(psContext);
+
+		psContext->indent--;
+		psContext->AddIndentation();
+		bcatcstr(bodyglsl, "}\n");
+
+		psContext->AddIndentation();
+		bcatcstr(bodyglsl, "threadgroup_barrier(mem_flags::mem_threadgroup);\n");
+
+		psContext->AddIndentation();
+		bcatcstr(bodyglsl, "if (!patchValid) {\n");
+		psContext->indent++;
+		psContext->AddIndentation();
+		bcatcstr(bodyglsl, "return;\n");
+		psContext->indent--;
+		psContext->AddIndentation();
+		bcatcstr(bodyglsl, "}\n");
+	}
+
+	if (psShader->eShaderType == HULL_SHADER)
+	{
+		for(ui32PhaseCallIndex=0; ui32PhaseCallIndex<3; ui32PhaseCallIndex++)
+		{
+			for (ui32Phase = 2; ui32Phase < psShader->asPhases.size(); ui32Phase++)
+			{
+				uint32_t i;
+				ShaderPhase *psPhase = &psShader->asPhases[ui32Phase];
+				if (psPhase->ePhase != ePhaseFuncCallOrder[ui32PhaseCallIndex])
+					continue;
+				psContext->currentPhase = ui32Phase;
+
+				if (psPhase->earlyMain->slen > 1)
+				{
+#ifdef _DEBUG
+					psContext->AddIndentation();
+					bcatcstr(bodyglsl, "//--- Start Early Main ---\n");
+#endif
+					bconcat(bodyglsl, psPhase->earlyMain);
+#ifdef _DEBUG
+					psContext->AddIndentation();
+					bcatcstr(bodyglsl, "//--- End Early Main ---\n");
+#endif
+				}
+
+				psContext->AddIndentation();
+				bformata(bodyglsl, "// %s%d\n", GetPhaseFuncName(psShader->asPhases[ui32Phase].ePhase), ui32Phase);
+				if (psPhase->ui32InstanceCount > 1)
+				{
+					psContext->AddIndentation();
+					bformata(bodyglsl, "for (int phaseInstanceID = 0; phaseInstanceID < %d; phaseInstanceID++) {\n", psPhase->ui32InstanceCount);
+					psContext->indent++;
+				}
+				else
+				{
+					if (psContext->currentPhase == HS_CTRL_POINT_PHASE && hasControlPointPhase == 1)
+					{
+						psContext->AddIndentation();
+						bcatcstr(bodyglsl, "if (patchValid) {\n");
+						psContext->indent++;
+
+						psContext->AddIndentation();
+						bformata(bodyglsl, "input.cp[controlPointID] = vertexFunction(%svertexInput);\n", tessVertexFunctionArguments.c_str());
+					}
+					else
+					{
+						psContext->AddIndentation();
+						bcatcstr(bodyglsl, "{\n");
+						psContext->indent++;
+					}
+				}
+
+				if (psPhase->psInst.size() > 0)
+				{
+					//The minus one here is remove the return statement at end of phases.
+					//We don't want to translate that, we'll just end the function body.
+					ASSERT(psPhase->psInst[psPhase->psInst.size() - 1].eOpcode == OPCODE_RET);
+					for (i = 0; i < psPhase->psInst.size() - 1; ++i)
+					{
+						TranslateInstruction(&psPhase->psInst[i]);
+					}
+				}
+
+				psContext->indent--;
+				psContext->AddIndentation();
+				bformata(bodyglsl, "}\n");
+
+				if (psPhase->hasPostShaderCode)
+				{
+#ifdef _DEBUG
+					psContext->AddIndentation();
+					bcatcstr(bodyglsl, "//--- Post shader code ---\n");
+#endif
+					bconcat(bodyglsl, psPhase->postShaderCode);
+#ifdef _DEBUG
+					psContext->AddIndentation();
+					bcatcstr(bodyglsl, "//--- End post shader code ---\n");
+#endif
+				}
+
+				if (psShader->asPhases[ui32Phase].ePhase == HS_CTRL_POINT_PHASE)
+				{
+					// We're done printing control point phase, run the rest only once per patch
+					psContext->AddIndentation();
+					bcatcstr(bodyglsl, "threadgroup_barrier(mem_flags::mem_threadgroup);\n");
+
+					psContext->AddIndentation();
+					bcatcstr(bodyglsl, "if (!patchValid) {\n");
+					psContext->indent++;
+					psContext->AddIndentation();
+					bcatcstr(bodyglsl, "return;\n");
+					psContext->indent--;
+					psContext->AddIndentation();
+					bcatcstr(bodyglsl, "}\n");
+				}
+			}
+		}
+
+		if (hasControlPoint)
+		{
+			psContext->AddIndentation();
+			bcatcstr(bodyglsl, "controlPoints[internalControlPointID] = output;\n");
+		}
+
+		psContext->AddIndentation();
+		bcatcstr(bodyglsl, "tessFactors[internalPatchID] = tessFactor;\n");
+
+		if (hasPatchConstant)
+		{
+			psContext->AddIndentation();
+			bcatcstr(bodyglsl, "patchConstants[internalPatchID] = patch;\n");
+		}
+
+		if(psContext->psDependencies)
+		{
+			//Save partitioning and primitive type for use by domain shader.
+			psContext->psDependencies->eTessOutPrim = psShader->sInfo.eTessOutPrim;
+			psContext->psDependencies->eTessPartitioning = psShader->sInfo.eTessPartitioning;
+			psContext->psDependencies->numPatchesInThreadGroup = numPatchesInThreadGroup;
+			psContext->psDependencies->hasControlPoint = hasControlPoint;
+			psContext->psDependencies->hasPatchConstant = hasPatchConstant;
+		}
+	}
+	else
+	{
+		if (psContext->psShader->asPhases[0].earlyMain->slen > 1)
+		{
+#ifdef _DEBUG
+			psContext->AddIndentation();
+			bcatcstr(bodyglsl, "//--- Start Early Main ---\n");
+#endif
+			bconcat(bodyglsl, psContext->psShader->asPhases[0].earlyMain);
+#ifdef _DEBUG
+			psContext->AddIndentation();
+			bcatcstr(bodyglsl, "//--- End Early Main ---\n");
+#endif
+		}
+
+		for (i = 0; i < psShader->asPhases[0].psInst.size(); ++i)
+		{
+			TranslateInstruction(&psShader->asPhases[0].psInst[i]);
+		}
 	}
 
 	psContext->indent--;
@@ -179,7 +664,60 @@ bool ToMetal::Translate()
 	bcatcstr(bodyglsl, "}\n");
 
 	psContext->currentGLSLString = &glsl;
-	
+
+	if(psShader->eShaderType == HULL_SHADER && psContext->psDependencies)
+	{
+		psContext->m_Reflection.OnTessellationKernelInfo(psContext->psDependencies->m_SharedBufferSlots.SaveTotalShaderStageAllocationsCount());
+	}
+
+	if(psShader->eShaderType == DOMAIN_SHADER && psContext->psDependencies)
+	{
+		int mtlTessellationPartitionMode = -1;
+		int mtlWinding = -1;
+
+		switch (psContext->psDependencies->eTessPartitioning)
+		{
+			case TESSELLATOR_PARTITIONING_INTEGER:
+				mtlTessellationPartitionMode = 1; // MTLTessellationPartitionModeInteger
+				break;
+			case TESSELLATOR_PARTITIONING_POW2:
+				mtlTessellationPartitionMode = 0; // MTLTessellationPartitionModePow2
+				break;
+			case TESSELLATOR_PARTITIONING_FRACTIONAL_ODD:
+				mtlTessellationPartitionMode = 2; // MTLTessellationPartitionModeFractionalOdd
+				break;
+			case TESSELLATOR_PARTITIONING_FRACTIONAL_EVEN:
+				mtlTessellationPartitionMode = 3; // MTLTessellationPartitionModeFractionalEven
+				break;
+			case TESSELLATOR_PARTITIONING_UNDEFINED:
+			default:
+				ASSERT(0);
+				break;
+		}
+
+		switch (psContext->psDependencies->eTessOutPrim)
+		{
+			case TESSELLATOR_OUTPUT_TRIANGLE_CW:
+				mtlWinding = 0; // MTLWindingClockwise
+				break;
+			case TESSELLATOR_OUTPUT_TRIANGLE_CCW:
+				mtlWinding = 1; // MTLWindingCounterClockwise
+				break;
+			case TESSELLATOR_OUTPUT_POINT:
+				psContext->m_Reflection.OnDiagnostics("Metal Tessellation: outputtopology(\"point\") not supported.", 0, true);
+				break;
+			case TESSELLATOR_OUTPUT_LINE:
+				psContext->m_Reflection.OnDiagnostics("Metal Tessellation: outputtopology(\"line\") not supported.", 0, true);
+				break;
+			case TESSELLATOR_OUTPUT_UNDEFINED:
+			default:
+				ASSERT(0);
+				break;
+		}
+
+		psContext->m_Reflection.OnTessellationInfo(mtlTessellationPartitionMode, mtlWinding, (uint32_t) psContext->psDependencies->fMaxTessFactor, psContext->psDependencies->numPatchesInThreadGroup);
+	}
+
 	bcatcstr(glsl, m_ExtraGlobalDefinitions.c_str());
 	
 	// Print out extra functions we generated
@@ -212,6 +750,13 @@ std::string ToMetal::GetOutputStructName() const
 			return "Mtl_VertexOut";
 		case PIXEL_SHADER:
 			return "Mtl_FragmentOut";
+		case HULL_SHADER:
+			if (psContext->psShader->asPhases[psContext->currentPhase].ePhase == HS_FORK_PHASE ||
+				psContext->psShader->asPhases[psContext->currentPhase].ePhase == HS_JOIN_PHASE)
+				return "Mtl_PatchConstant";
+			return "Mtl_ControlPoint";
+		case DOMAIN_SHADER:
+			return "Mtl_VertexOutPostTess";
 		default:
 			ASSERT(0);
 			return "";
@@ -228,10 +773,41 @@ std::string ToMetal::GetInputStructName() const
 			return "Mtl_FragmentIn";
 		case COMPUTE_SHADER:
 			return "Mtl_KernelIn";
+		case HULL_SHADER:
+			return "Mtl_HullIn";
+		case DOMAIN_SHADER:
+			return "Mtl_VertexInPostTess";
 		default:
 			ASSERT(0);
 			return "";
 	}
+}
+
+std::string ToMetal::GetCBName(const std::string& cbName) const
+{
+	std::string output = cbName;
+	if (cbName[0] == '$')
+	{
+		// "$Globals" should have different names in different shaders so that CbKey can discretely identify a CB.
+		switch (psContext->psShader->eShaderType)
+		{
+			case VERTEX_SHADER:
+			case HULL_SHADER:
+			case DOMAIN_SHADER:
+				output[0] = 'V';
+				break;
+			case PIXEL_SHADER:
+				output[0] = 'F';
+				break;
+			case COMPUTE_SHADER:
+				output = cbName.substr(1);
+				break;
+			default:
+				ASSERT(0);
+				break;
+		}
+	}
+	return output;
 }
 
 void ToMetal::SetIOPrefixes()
@@ -239,6 +815,8 @@ void ToMetal::SetIOPrefixes()
 	switch (psContext->psShader->eShaderType)
 	{
 		case VERTEX_SHADER:
+		case HULL_SHADER:
+		case DOMAIN_SHADER:
 			psContext->inputPrefix = "input.";
 			psContext->outputPrefix = "output.";
 			break;

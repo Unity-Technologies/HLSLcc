@@ -50,13 +50,14 @@ struct Declaration
 		float fMaxTessFactor;
 		uint32_t ui32IndexRange;
 		uint32_t ui32GSInstanceCount;
+		SB_SAMPLER_MODE eSamplerMode; // For sampler declarations, the sampler mode.
 
 		struct Interface_TAG
 		{
 			uint32_t ui32InterfaceID;
 			uint32_t ui32NumFuncTables;
 			uint32_t ui32ArraySize;
-		} interface;
+		} iface;
 	} value;
 
 	uint32_t ui32BufferStride;

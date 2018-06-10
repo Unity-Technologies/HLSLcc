@@ -43,11 +43,11 @@ static int HaveOverloadedTextureFuncs(const GLLang eLang)
 	return 1;
 }
 
-//Only enable for ES.
+//Only enable for ES. Vulkan and Switch.
 //Not present in 120, ignored in other desktop languages. Specifically enabled on Vulkan.
 static int HavePrecisionQualifiers(const HLSLCrossCompilerContext *psContext)
 {
-	if ((psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) != 0)
+	if ((psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) != 0 || (psContext->flags & HLSLCC_FLAG_NVN_TARGET) != 0)
 		return 1;
 
 	const GLLang eLang = psContext->psShader->eTargetLanguage;
@@ -56,6 +56,12 @@ static int HavePrecisionQualifiers(const HLSLCrossCompilerContext *psContext)
 		return 1;
 	}
 	return 0;
+}
+
+static int EmitLowp(const HLSLCrossCompilerContext *psContext)
+{
+    const GLLang eLang = psContext->psShader->eTargetLanguage;
+    return eLang == LANG_ES_100 ? 1 : 0;
 }
 
 static int HaveCubemapArray(const GLLang eLang)
@@ -139,17 +145,68 @@ static int PixelInterpDependency(const GLLang eLang)
     return 0;
 }
 
-static int HaveUVec(const GLLang eLang)
+static int HaveUnsignedTypes(const GLLang eLang)
 {
-    switch(eLang)
-    {
+	switch(eLang)
+	{
 	case LANG_ES_100:
 	case LANG_120:
-        return 0;
+		return 0;
 	default:
 		break;
-    }
-    return 1;
+	}
+	return 1;
+}
+
+static int HaveBitEncodingOps(const GLLang eLang)
+{
+	switch(eLang)
+	{
+	case LANG_ES_100:
+	case LANG_120:
+		return 0;
+	default:
+		break;
+	}
+	return 1;
+}
+
+static int HaveNativeBitwiseOps(const GLLang eLang)
+{
+	switch(eLang)
+	{
+	case LANG_ES_100:
+	case LANG_120:
+		return 0;
+	default:
+		break;
+	}
+	return 1;
+}
+
+static int HaveDynamicIndexing(HLSLCrossCompilerContext *psContext, const Operand* psOperand = NULL)
+{
+	// WebGL only allows dynamic indexing with constant expressions, loop indices or a combination.
+	// The only exception is for uniform access in vertex shaders, which can be indexed using any expression.
+
+	switch(psContext->psShader->eTargetLanguage)
+	{
+	case LANG_ES_100:
+	case LANG_120:
+		if (psOperand != NULL)
+		{
+			if (psOperand->m_ForLoopInductorName)
+				return 1;
+
+			if (psContext->psShader->eShaderType == VERTEX_SHADER && psOperand->eType == OPERAND_TYPE_CONSTANT_BUFFER)
+				return 1;
+		}
+
+		return 0;
+	default:
+		break;
+	}
+	return 1;
 }
 
 static int HaveGather(const GLLang eLang)

@@ -89,12 +89,9 @@ int ShaderInfo::GetPatchConstantSignatureFromRegister(const uint32_t ui32Registe
 		}
 	}
 
-	if (allowNull)
-		return 0;
-
 	// There are situations (especially when using dcl_indexrange) where the compiler happily writes outside the actual masks.
 	// In those situations just take the last signature that uses that register (it's typically the "highest" one)
-	for (i = ui32NumVars - 1; i != 0xffffffff; i--)
+	for( i = ui32NumVars - 1; i-- > 0; )
 	{
 		if (ui32Register == psPatchConstantSignatures[i].ui32Register)
 		{
@@ -103,8 +100,7 @@ int ShaderInfo::GetPatchConstantSignatureFromRegister(const uint32_t ui32Registe
 		}
 	}
 
-
-	ASSERT(0);
+	ASSERT(allowNull);
 	return 0;
 }
 
@@ -314,7 +310,7 @@ int ShaderInfo::GetShaderVarFromOffset(const uint32_t ui32Vec4Offset,
 
 // Patches the fullName of the var with given array indices. Does not insert the indexing for the var itself if it is an array.
 // Searches for brackets and inserts indices one by one.
-std::string ShaderInfo::GetShaderVarIndexedFullName(const ShaderVarType* psShaderVar, std::vector<uint32_t> &indices, const std::string dynamicIndex, bool revertDynamicIndexCalc, bool matrixAsVectors)
+std::string ShaderInfo::GetShaderVarIndexedFullName(const ShaderVarType* psShaderVar, const std::vector<uint32_t>& indices, const std::string& dynamicIndex, bool revertDynamicIndexCalc, bool matrixAsVectors)
 {
 	std::ostringstream oss;
 	size_t prevpos = 0;

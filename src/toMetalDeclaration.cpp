@@ -16,9 +16,44 @@
 #endif // #ifndef fpcheck
 
 
-bool ToMetal::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::InOutSignature *sig, std::string &result, uint32_t *pui32IgnoreSwizzle, bool isIndexed, bool isInput, bool *outSkipPrefix)
+bool ToMetal::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::InOutSignature *sig, std::string &result, uint32_t *pui32IgnoreSwizzle, bool isIndexed, bool isInput, bool *outSkipPrefix, int *iIgnoreRedirect)
 {
-	if (sig && (sig->eSystemValueType == NAME_POSITION || (sig->semanticName == "POS" && sig->ui32SemanticIndex == 0)) && psContext->psShader->eShaderType == VERTEX_SHADER)
+	if (psContext->psShader->eShaderType == HULL_SHADER && sig && sig->semanticName == "SV_TessFactor")
+	{
+		if (pui32IgnoreSwizzle)
+			*pui32IgnoreSwizzle = 1;
+		ASSERT(sig->ui32SemanticIndex <= 3);
+		std::ostringstream oss;
+		oss << "tessFactor.edgeTessellationFactor[" << sig->ui32SemanticIndex << "]";
+		result = oss.str();
+		if (outSkipPrefix != NULL) *outSkipPrefix = true;
+		if (iIgnoreRedirect != NULL) *iIgnoreRedirect = 1;
+		return true;
+	}
+
+	if (psContext->psShader->eShaderType == HULL_SHADER && sig && sig->semanticName == "SV_InsideTessFactor")
+	{
+		if (pui32IgnoreSwizzle)
+			*pui32IgnoreSwizzle = 1;
+		ASSERT(sig->ui32SemanticIndex <= 1);
+		std::ostringstream oss;
+		oss << "tessFactor.insideTessellationFactor";
+		if (psContext->psShader->sInfo.eTessDomain != TESSELLATOR_DOMAIN_TRI)
+			oss << "[" << sig->ui32SemanticIndex << "]";
+		result = oss.str();
+		if (outSkipPrefix != NULL) *outSkipPrefix = true;
+		if (iIgnoreRedirect != NULL) *iIgnoreRedirect = 1;
+		return true;
+	}
+
+	if (sig && sig->semanticName == "SV_InstanceID")
+	{
+		if (pui32IgnoreSwizzle)
+			*pui32IgnoreSwizzle = 1;
+	}
+
+	if (sig && ((sig->eSystemValueType == NAME_POSITION || sig->semanticName == "POS") && sig->ui32SemanticIndex == 0) &&
+		((psContext->psShader->eShaderType == VERTEX_SHADER && (psContext->flags & HLSLCC_FLAG_METAL_TESSELLATION) == 0)))
 	{
 		result = "mtl_Position";
 		return true;
@@ -29,8 +64,10 @@ bool ToMetal::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::I
 	switch (sig->eSystemValueType)
 	{
 	case NAME_POSITION:
-		ASSERT(psContext->psShader->eShaderType == PIXEL_SHADER);
-		result = "mtl_FragCoord";
+		if (psContext->psShader->eShaderType == PIXEL_SHADER)
+			result = "mtl_FragCoord";
+		else
+			result = "mtl_Position";
 		if (outSkipPrefix != NULL) *outSkipPrefix = true;
 		return true;
 	case NAME_RENDER_TARGET_ARRAY_INDEX:
@@ -41,17 +78,19 @@ bool ToMetal::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::I
 		return true;
 	case NAME_CLIP_DISTANCE:
 	{
-		// this is temp variabe, declaration and redirecting to actual output is handled in DeclareClipPlanes
+		// this is temp variable, declaration and redirecting to actual output is handled in DeclareClipPlanes
 		char tmpName[128]; sprintf(tmpName, "phase%d_ClipDistance%d", psContext->currentPhase, sig->ui32SemanticIndex);
 		result = tmpName;
 		if (outSkipPrefix != NULL) *outSkipPrefix = true;
+		if (iIgnoreRedirect != NULL) *iIgnoreRedirect = 1;
 		return true;
 	}
-		/*	case NAME_VIEWPORT_ARRAY_INDEX:
-		result = "gl_ViewportIndex";
-		if (puiIgnoreSwizzle)
-		*puiIgnoreSwizzle = 1;
-		return true;*/
+	case NAME_VIEWPORT_ARRAY_INDEX:
+		result = "mtl_ViewPortIndex";
+		if (outSkipPrefix != NULL) *outSkipPrefix = true;
+		if (pui32IgnoreSwizzle)
+			*pui32IgnoreSwizzle = 1;
+		return true;
 	case NAME_VERTEX_ID:
 		result = "mtl_VertexID";
 		if (outSkipPrefix != NULL) *outSkipPrefix = true;
@@ -82,6 +121,16 @@ bool ToMetal::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::I
 	}
 	}
 
+    if (psContext->psShader->asPhases[psContext->currentPhase].ePhase == HS_CTRL_POINT_PHASE ||
+		psContext->psShader->asPhases[psContext->currentPhase].ePhase == HS_FORK_PHASE)
+    {
+
+		std::ostringstream oss;
+		oss << sig->semanticName << sig->ui32SemanticIndex;
+		result = oss.str();
+        return true;
+    }
+
 	switch (psOperand->eType)
 	{
 		case OPERAND_TYPE_INPUT_COVERAGE_MASK:
@@ -109,6 +158,12 @@ bool ToMetal::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::I
 			if (pui32IgnoreSwizzle)
 				*pui32IgnoreSwizzle = 1;
 			return true;
+		case OPERAND_TYPE_INPUT_DOMAIN_POINT:
+			result = "mtl_TessCoord";
+			if (outSkipPrefix != NULL) *outSkipPrefix = true;
+			if (pui32IgnoreSwizzle)
+				*pui32IgnoreSwizzle = 1;
+			return true;
 		case OPERAND_TYPE_OUTPUT_DEPTH:
 		case OPERAND_TYPE_OUTPUT_DEPTH_GREATER_EQUAL:
 		case OPERAND_TYPE_OUTPUT_DEPTH_LESS_EQUAL:
@@ -128,6 +183,23 @@ bool ToMetal::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::I
 				*pui32IgnoreSwizzle = 1;
 			return true;
 		}
+		case OPERAND_TYPE_INPUT_PATCH_CONSTANT:
+		{
+			std::ostringstream oss;
+			oss << sig->semanticName << sig->ui32SemanticIndex;
+			result = oss.str();
+			if (outSkipPrefix != NULL) *outSkipPrefix = true;
+			return true;
+		}
+		case OPERAND_TYPE_INPUT_CONTROL_POINT:
+		{
+			std::ostringstream oss;
+			oss << sig->semanticName << sig->ui32SemanticIndex;
+			result = oss.str();
+			if (outSkipPrefix != NULL) *outSkipPrefix = true;
+			return true;
+			break;
+		}
 		default:
             ASSERT(0);
             break;
@@ -146,37 +218,37 @@ void ToMetal::DeclareBuiltinInput(const Declaration *psDecl)
 	{
 	case NAME_POSITION:
 		ASSERT(psContext->psShader->eShaderType == PIXEL_SHADER);
-		m_StructDefinitions[""].m_Members.push_back("float4 mtl_FragCoord [[ position ]]");
+		m_StructDefinitions[""].m_Members.push_back(std::make_pair("mtl_FragCoord", "float4 mtl_FragCoord [[ position ]]"));
 		break;
 	case NAME_RENDER_TARGET_ARRAY_INDEX:
 		// Only supported on a Mac
-		m_StructDefinitions[""].m_Members.push_back("uint mtl_Layer [[ render_target_array_index ]]");
+		m_StructDefinitions[""].m_Members.push_back(std::make_pair("mtl_Layer", "uint mtl_Layer [[ render_target_array_index ]]"));
 		break;
 	case NAME_CLIP_DISTANCE:
 		ASSERT(0); // Should never be an input
 		break;
 	case NAME_VIEWPORT_ARRAY_INDEX:
-		// Not on Metal
-		ASSERT(0);
+		// Only supported on a Mac
+		m_StructDefinitions[""].m_Members.push_back(std::make_pair("mtl_ViewPortIndex", "uint mtl_ViewPortIndex [[ viewport_array_index ]]"));
 		break;
 	case NAME_INSTANCE_ID:
-		m_StructDefinitions[""].m_Members.push_back("uint mtl_InstanceID [[ instance_id ]]");
+		m_StructDefinitions[""].m_Members.push_back(std::make_pair("mtl_InstanceID", "uint mtl_InstanceID [[ instance_id ]]"));
 		break;
 	case NAME_IS_FRONT_FACE:
-		m_StructDefinitions[""].m_Members.push_back("bool mtl_FrontFace [[ front_facing ]]");
+		m_StructDefinitions[""].m_Members.push_back(std::make_pair("mtl_FrontFace", "bool mtl_FrontFace [[ front_facing ]]"));
 		break;
 	case NAME_SAMPLE_INDEX:
-		m_StructDefinitions[""].m_Members.push_back("uint mtl_SampleID [[ sample_id ]]");
+		m_StructDefinitions[""].m_Members.push_back(std::make_pair("mtl_SampleID", "uint mtl_SampleID [[ sample_id ]]"));
 		break;
 	case NAME_VERTEX_ID:
-		m_StructDefinitions[""].m_Members.push_back("uint mtl_VertexID [[ vertex_id ]]");
+		m_StructDefinitions[""].m_Members.push_back(std::make_pair("mtl_VertexID", "uint mtl_VertexID [[ vertex_id ]]"));
 		break;
 	case NAME_PRIMITIVE_ID:
 		// Not on Metal
 		ASSERT(0);
 		break;
 	default:
-		m_StructDefinitions[""].m_Members.push_back(std::string("float4 ").append(psDecl->asOperands[0].specialName));
+		m_StructDefinitions[""].m_Members.push_back(std::make_pair(psDecl->asOperands[0].specialName, std::string("float4 ").append(psDecl->asOperands[0].specialName)));
 		ASSERT(0); // Catch this to see what's happening
 		break;
 	}
@@ -195,7 +267,7 @@ void ToMetal::DeclareClipPlanes(const Declaration* decl, unsigned declCount)
 
 	std::ostringstream oss; oss << "float mtl_ClipDistance [[ clip_distance ]]";
 	if(planeCount > 1) oss << "[" << planeCount << "]";
-	m_StructDefinitions[GetOutputStructName()].m_Members.push_back(oss.str());
+	m_StructDefinitions[GetOutputStructName()].m_Members.push_back(std::make_pair(std::string("mtl_ClipDistance"), oss.str()));
 
 	Shader* shader = psContext->psShader;
 
@@ -253,7 +325,7 @@ void ToMetal::GenerateTexturesReflection(HLSLccReflection* refl)
 	}
 
 	for(unsigned i = 0, n = m_Textures.size() ; i < n ; ++i)
-		refl->OnTextureBinding(m_Textures[i].name, m_Textures[i].textureBind, m_Textures[i].samplerBind, m_Textures[i].dim, m_Textures[i].uav);
+		refl->OnTextureBinding(m_Textures[i].name, m_Textures[i].textureBind, m_Textures[i].samplerBind, m_Textures[i].isMultisampled, m_Textures[i].dim, m_Textures[i].uav);
 }
 
 void ToMetal::DeclareBuiltinOutput(const Declaration *psDecl)
@@ -263,19 +335,18 @@ void ToMetal::DeclareBuiltinOutput(const Declaration *psDecl)
 	switch (psDecl->asOperands[0].eSpecialName)
 	{
 		case NAME_POSITION:
-			m_StructDefinitions[out].m_Members.push_back("float4 mtl_Position [[ position ]]");
+			m_StructDefinitions[out].m_Members.push_back(std::make_pair("mtl_Position", "float4 mtl_Position [[ position ]]"));
 			break;
 		case NAME_RENDER_TARGET_ARRAY_INDEX:
 			// Only supported on a Mac
-			m_StructDefinitions[out].m_Members.push_back("uint mtl_Layer [[ render_target_array_index ]]");
+			m_StructDefinitions[out].m_Members.push_back(std::make_pair("mtl_Layer", "uint mtl_Layer [[ render_target_array_index ]]"));
 			break;
 		case NAME_CLIP_DISTANCE:
 			// it will be done separately in DeclareClipPlanes
 			break;
-
 		case NAME_VIEWPORT_ARRAY_INDEX:
-			// Not on Metal
-			ASSERT(0);
+			// Only supported on a Mac
+			m_StructDefinitions[out].m_Members.push_back(std::make_pair("mtl_ViewPortIndex", "uint mtl_ViewPortIndex [[ viewport_array_index ]]"));
 			break;
 		case NAME_VERTEX_ID:
 			ASSERT(0); //VertexID is not an output
@@ -290,51 +361,28 @@ void ToMetal::DeclareBuiltinOutput(const Declaration *psDecl)
 		case NAME_IS_FRONT_FACE:
 			ASSERT(0); //FrontFacing is not an output
 			break;
+
+		//For the quadrilateral domain, there are 6 factors (4 sides, 2 inner).
 		case NAME_FINAL_QUAD_U_EQ_0_EDGE_TESSFACTOR:
-			// Not on Metal
-			ASSERT(0);
-			break;
 		case NAME_FINAL_QUAD_V_EQ_0_EDGE_TESSFACTOR:
-			// Not on Metal
-			ASSERT(0);
-			break;
 		case NAME_FINAL_QUAD_U_EQ_1_EDGE_TESSFACTOR:
-			// Not on Metal
-			ASSERT(0);
-			break;
 		case NAME_FINAL_QUAD_V_EQ_1_EDGE_TESSFACTOR:
-			// Not on Metal
-			ASSERT(0);
-			break;
-		case NAME_FINAL_TRI_U_EQ_0_EDGE_TESSFACTOR:
-			// Not on Metal
-			ASSERT(0);
-			break;
-		case NAME_FINAL_TRI_V_EQ_0_EDGE_TESSFACTOR:
-			// Not on Metal
-			ASSERT(0);
-			break;
-		case NAME_FINAL_TRI_W_EQ_0_EDGE_TESSFACTOR:
-			// Not on Metal
-			ASSERT(0);
-			break;
-		case NAME_FINAL_LINE_DENSITY_TESSFACTOR:
-			// Not on Metal
-			ASSERT(0);
-			break;
-		case NAME_FINAL_LINE_DETAIL_TESSFACTOR:
-			// Not on Metal
-			ASSERT(0);
-			break;
-		case NAME_FINAL_TRI_INSIDE_TESSFACTOR:
 		case NAME_FINAL_QUAD_U_INSIDE_TESSFACTOR:
-			// Not on Metal
-			ASSERT(0);
-			break;
 		case NAME_FINAL_QUAD_V_INSIDE_TESSFACTOR:
-			// Not on Metal
-			ASSERT(0);
+
+		//For the triangular domain, there are 4 factors (3 sides, 1 inner)
+		case NAME_FINAL_TRI_U_EQ_0_EDGE_TESSFACTOR:
+		case NAME_FINAL_TRI_V_EQ_0_EDGE_TESSFACTOR:
+		case NAME_FINAL_TRI_W_EQ_0_EDGE_TESSFACTOR:
+		case NAME_FINAL_TRI_INSIDE_TESSFACTOR:
+
+		//For the isoline domain, there are 2 factors (detail and density).
+		case NAME_FINAL_LINE_DETAIL_TESSFACTOR:
+		case NAME_FINAL_LINE_DENSITY_TESSFACTOR:
+		{
+			// Handled separately
 			break;
+		}
 		default:
 			// This might be SV_Position (because d3dcompiler is weird). Get signature and check
             const ShaderInfo::InOutSignature *sig = NULL;
@@ -342,7 +390,7 @@ void ToMetal::DeclareBuiltinOutput(const Declaration *psDecl)
 			ASSERT(sig != NULL);
 			if (sig->eSystemValueType == NAME_POSITION && sig->ui32SemanticIndex == 0)
 			{
-				m_StructDefinitions[out].m_Members.push_back("float4 mtl_Position [[ position ]]");
+				m_StructDefinitions[out].m_Members.push_back(std::make_pair("mtl_Position", "float4 mtl_Position [[ position ]]"));
 				break;
 			}
 
@@ -395,6 +443,50 @@ static std::string BuildOperandTypeString(OPERAND_MIN_PRECISION ePrec, INOUT_COM
 			break;
 	}
 	return HLSLcc::GetConstructorForTypeMetal(t, numComponents);
+}
+
+void ToMetal::DeclareHullShaderPassthrough()
+{
+	uint32_t i;
+
+	for (i = 0; i < psContext->psShader->sInfo.psInputSignatures.size(); i++)
+	{
+		ShaderInfo::InOutSignature *psSig = &psContext->psShader->sInfo.psInputSignatures[i];
+
+		std::string name;
+		{
+			std::ostringstream oss;
+			oss << psSig->semanticName << psSig->ui32SemanticIndex;
+			name = oss.str();
+		}
+
+		uint32_t ui32NumComponents = HLSLcc::GetNumberBitsSet(psSig->ui32Mask);
+		std::string typeName = BuildOperandTypeString(OPERAND_MIN_PRECISION_DEFAULT, psSig->eComponentType, ui32NumComponents);
+
+		std::ostringstream oss;
+		oss << typeName << " " << name;
+		oss << " [[ user(" << name << ") ]]";
+
+		std::string declString;
+		declString = oss.str();
+
+		m_StructDefinitions[GetInputStructName()].m_Members.push_back(std::make_pair(name, declString));
+
+		std::string out = GetOutputStructName();
+		m_StructDefinitions[out].m_Members.push_back(std::make_pair(name, declString));
+
+		// For preserving data layout, declare output struct as domain shader input, too
+		oss.str("");
+		out += "In";
+
+		oss << typeName << " " << name;
+		// VERTEX_SHADER hardcoded on purpose
+		uint32_t loc = psContext->psDependencies->GetVaryingLocation(name, VERTEX_SHADER, true);
+		oss << " [[ " << "attribute(" << loc << ")" << " ]] ";
+
+		psContext->m_Reflection.OnInputBinding(name, loc);
+		m_StructDefinitions[out].m_Members.push_back(std::make_pair(name, oss.str()));
+	}
 }
 
 void ToMetal::HandleOutputRedirect(const Declaration *psDecl, const std::string &typeName)
@@ -500,8 +592,14 @@ void ToMetal::HandleInputRedirect(const Declaration *psDecl, const std::string &
 	const ShaderInfo::InOutSignature *psSig = NULL;
 
 	int regSpace = psOperand->GetRegisterSpace(psContext);
-	if (regSpace == 0 && psShader->asPhases[psContext->currentPhase].acInputNeedsRedirect[psOperand->ui32RegisterNumber] == 0xff)
+	if (regSpace == 0)
 	{
+		if (psShader->asPhases[psContext->currentPhase].acInputNeedsRedirect[psOperand->ui32RegisterNumber] == 0xff)
+			needsRedirect = 1;
+	}
+	else if (psShader->asPhases[psContext->currentPhase].acPatchConstantsNeedsRedirect[psOperand->ui32RegisterNumber] == 0xff)
+	{
+		psContext->psShader->sInfo.GetPatchConstantSignatureFromRegister(psOperand->ui32RegisterNumber, psOperand->ui32CompMask, &psSig);
 		needsRedirect = 1;
 	}
 
@@ -520,7 +618,19 @@ void ToMetal::HandleInputRedirect(const Declaration *psDecl, const std::string &
 		psContext->AddIndentation();
 
 		bcatcstr(psPhase->earlyMain, "    ");
-		bformata(psPhase->earlyMain, "%s phase%d_Input%d_%d;\n", typeName.c_str(), psContext->currentPhase, regSpace, psOperand->ui32RegisterNumber);
+		// Does the input have multiple array components (such as geometry shader input, or domain shader control point input)
+		if ((psShader->eShaderType == DOMAIN_SHADER && regSpace == 0) || (psShader->eShaderType == GEOMETRY_SHADER))
+		{
+			// The count is actually stored in psOperand->aui32ArraySizes[0]
+			origArraySize = psOperand->aui32ArraySizes[0];
+			// bformata(glsl, "%s vec4 phase%d_Input%d_%d[%d];\n", Precision, psContext->currentPhase, regSpace, psOperand->ui32RegisterNumber, origArraySize);
+			bformata(psPhase->earlyMain, "%s phase%d_Input%d_%d[%d];\n", typeName.c_str(), psContext->currentPhase, regSpace, psOperand->ui32RegisterNumber, origArraySize);
+			needsLooping = 1;
+			i = origArraySize - 1;
+		}
+		else
+			// bformata(glsl, "%s vec4 phase%d_Input%d_%d;\n", Precision, psContext->currentPhase, regSpace, psOperand->ui32RegisterNumber);
+			bformata(psPhase->earlyMain, "%s phase%d_Input%d_%d;\n", typeName.c_str(), psContext->currentPhase, regSpace, psOperand->ui32RegisterNumber);
 
 		// Do a conditional loop. In normal cases needsLooping == 0 so this is only run once.
 		do
@@ -818,7 +928,7 @@ void ToMetal::DeclareStructVariable(const std::string &parentName, const ShaderV
 		{
 			oss << "[" << var.Elements << "]";
 		}
-		m_StructDefinitions[parentName].m_Members.push_back(oss.str());
+		m_StructDefinitions[parentName].m_Members.push_back(std::make_pair(var.name, oss.str()));
 		m_StructDefinitions[parentName].m_Dependencies.push_back(var.name + "_Type");
 		return;
 	}
@@ -846,7 +956,7 @@ void ToMetal::DeclareStructVariable(const std::string &parentName, const ShaderV
 				// On non-compute we can fake that we still have a matrix, as CB upload code will fill the data correctly on 4x4 matrices.
 				// That way we avoid the issues with mismatching types for builtins etc.
 				if (psContext->psShader->eShaderType == COMPUTE_SHADER)
-					doDeclare = psContext->m_Reflection.OnConstant(var.fullName, var.Offset + cumulativeOffset, var.Type, 4, 1, false, elemCount);
+					doDeclare = psContext->m_Reflection.OnConstant(var.fullName, var.Offset + cumulativeOffset, var.Type, 1, 4, false, elemCount);
 				else
 					doDeclare = psContext->m_Reflection.OnConstant(var.fullName, var.Offset + cumulativeOffset, var.Type, var.Rows, var.Columns, true, var.Elements);
 			}
@@ -866,7 +976,7 @@ void ToMetal::DeclareStructVariable(const std::string &parentName, const ShaderV
 		}
 
 		if (doDeclare)
-			m_StructDefinitions[parentName].m_Members.push_back(oss.str());
+			m_StructDefinitions[parentName].m_Members.push_back(std::make_pair(var.name, oss.str()));
 	}
 	else
 	if (var.Class == SVC_VECTOR && var.Columns > 1)
@@ -883,7 +993,7 @@ void ToMetal::DeclareStructVariable(const std::string &parentName, const ShaderV
 			doDeclare = psContext->m_Reflection.OnConstant(var.fullName, var.Offset + cumulativeOffset, var.Type, 1, var.Columns, false, var.Elements);
 
 		if (doDeclare)
-			m_StructDefinitions[parentName].m_Members.push_back(oss.str());
+			m_StructDefinitions[parentName].m_Members.push_back(std::make_pair(var.name, oss.str()));
 	}
 	else
 	if ((var.Class == SVC_SCALAR) ||
@@ -909,7 +1019,7 @@ void ToMetal::DeclareStructVariable(const std::string &parentName, const ShaderV
 			doDeclare = psContext->m_Reflection.OnConstant(var.fullName, var.Offset + cumulativeOffset, var.Type, 1, 1, false, var.Elements);
 
 		if (doDeclare)
-			m_StructDefinitions[parentName].m_Members.push_back(oss.str());
+			m_StructDefinitions[parentName].m_Members.push_back(std::make_pair(var.name, oss.str()));
 	}
 	else
 	{
@@ -938,29 +1048,32 @@ void ToMetal::DeclareStructType(const std::string &name, const std::vector<Shade
 
 void ToMetal::DeclareConstantBuffer(const ConstantBuffer *psCBuf, uint32_t ui32BindingPoint)
 {
-	std::string cbname = psCBuf->name.c_str();
-	
-	const bool isGlobals = (cbname == "$Globals");
+	const bool isGlobals = (psCBuf->name == "$Globals");
 	const bool stripUnused = isGlobals && (psContext->flags & HLSLCC_FLAG_REMOVE_UNUSED_GLOBALS);
-	
-	if (cbname[0] == '$')
-		cbname = cbname.substr(1);
-	
+	std::string cbname = GetCBName(psCBuf->name);
+
 	// Note: if we're stripping unused members, both ui32TotalSizeInBytes and individual offsets into reflection will be completely off.
 	// However, the reflection layer re-calculates both to match Metal alignment rules anyway, so we're good.
 	if (!psContext->m_Reflection.OnConstantBuffer(cbname, psCBuf->ui32TotalSizeInBytes, psCBuf->GetMemberCount(stripUnused)))
 		return;
 
+	if (psContext->psDependencies->IsMemberDeclared(cbname))
+		return;
+
 	DeclareStructType(cbname + "_Type", psCBuf->asVars, true, 0, stripUnused);
+
 	std::ostringstream oss;
 	uint32_t slot = m_BufferSlots.GetBindingSlot(ui32BindingPoint, BindingSlotAllocator::ConstantBuffer);
-	oss << "constant " << cbname << "_Type& " << cbname << " [[ buffer("<< slot <<") ]]";
-	m_StructDefinitions[""].m_Members.push_back(oss.str());
+
+    if (HLSLcc::IsUnityFlexibleInstancingBuffer(psCBuf))
+        oss << "const constant " << psCBuf->asVars[0].name << "_Type* ";
+    else
+        oss << "constant " << cbname << "_Type& ";
+    oss << cbname << " [[ buffer(" << slot << ") ]]";
+
+	m_StructDefinitions[""].m_Members.push_back(std::make_pair(cbname, oss.str()));
 	m_StructDefinitions[""].m_Dependencies.push_back(cbname + "_Type");
-
 	psContext->m_Reflection.OnConstantBufferBinding(cbname, slot);
-
-
 }
 
 void ToMetal::DeclareBufferVariable(const Declaration *psDecl, bool isRaw, bool isUAV)
@@ -980,35 +1093,37 @@ void ToMetal::DeclareBufferVariable(const Declaration *psDecl, bool isRaw, bool 
 		BufType = BufName + "_Type";
 		typeoss << "uint value[";
 		typeoss << psDecl->ui32BufferStride / 4 << "]";
-		m_StructDefinitions[BufType].m_Members.push_back(typeoss.str());
+		m_StructDefinitions[BufType].m_Members.push_back(std::make_pair("value", typeoss.str()));
 		m_StructDefinitions[""].m_Dependencies.push_back(BufType);
 	}
 
-	std::ostringstream oss;
-	
-	if (!isUAV || ((psDecl->sUAV.ui32AccessFlags & ACCESS_FLAG_WRITE) == 0))
+	if (!psContext->psDependencies->IsMemberDeclared(BufName))
 	{
-		BufConst =  "const ";
-		oss << BufConst;
+		std::ostringstream oss;
+
+		if (!isUAV || ((psDecl->sUAV.ui32AccessFlags & ACCESS_FLAG_WRITE) == 0))
+		{
+			BufConst =  "const ";
+			oss << BufConst;
+		}
+		else
+		{
+			if (psContext->psShader->eShaderType != COMPUTE_SHADER)
+				psContext->m_Reflection.OnDiagnostics("This shader might not work on all Metal devices because of buffer writes on non-compute shaders.", 0, false);
+		}
+
+		if (isRaw)
+			oss << "device uint *" << BufName;
+		else
+			oss << "device " << BufType << " *" << BufName;
+
+		uint32_t loc = m_BufferSlots.GetBindingSlot(regNo, isUAV ? BindingSlotAllocator::RWBuffer : BindingSlotAllocator::Texture);
+		oss << " [[ buffer(" << loc << ") ]]";
+
+		m_StructDefinitions[""].m_Members.push_back(std::make_pair(BufName, oss.str()));
+		psContext->m_Reflection.OnBufferBinding(BufName, loc, isUAV);
 	}
-	else
-	{	
-		if (psContext->psShader->eShaderType != COMPUTE_SHADER)
-			psContext->m_Reflection.OnDiagnostics("This shader might not work on all Metal devices because of buffer writes on non-compute shaders.", 0, false);
-	}
 
-	if (isRaw)
-		oss << "device uint *" << BufName;
-	else
-		oss << "device " << BufType << " *" << BufName;
-
-	uint32_t loc = m_BufferSlots.GetBindingSlot(regNo, isUAV ? BindingSlotAllocator::RWBuffer : BindingSlotAllocator::Texture);
-	oss << " [[ buffer(" << loc << ") ]]";
-
-	m_StructDefinitions[""].m_Members.push_back(oss.str());
-	psContext->m_Reflection.OnBufferBinding(BufName, loc, isUAV);
-	
-	
 	// In addition to the actual declaration, we need pointer modification and possible counter declaration
 	// in early main:
 	std::ostringstream earlymainoss;
@@ -1159,6 +1274,29 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 	{
 		const Operand* psOperand = &psDecl->asOperands[0];
 
+		if((psOperand->eType == OPERAND_TYPE_OUTPUT_CONTROL_POINT_ID)||
+			(psOperand->eType == OPERAND_TYPE_INPUT_FORK_INSTANCE_ID))
+		{
+			break;
+		}
+
+		// No need to declare patch constants read again by the hull shader.
+		if ((psOperand->eType == OPERAND_TYPE_INPUT_PATCH_CONSTANT) && psContext->psShader->eShaderType == HULL_SHADER)
+		{
+			break;
+		}
+		// ...or control points
+		if ((psOperand->eType == OPERAND_TYPE_INPUT_CONTROL_POINT) && psContext->psShader->eShaderType == HULL_SHADER)
+		{
+			break;
+		}
+
+		//Already declared as part of an array.
+		if(psShader->aIndexedInput[psOperand->GetRegisterSpace(psContext)][psDecl->asOperands[0].ui32RegisterNumber] == -1)
+		{
+			break;
+		}
+
 		uint32_t ui32Reg = psDecl->asOperands[0].ui32RegisterNumber;
 		uint32_t ui32CompMask = psDecl->asOperands[0].ui32CompMask;
 
@@ -1179,7 +1317,7 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 		{
 			std::ostringstream oss;
 			oss << "uint " << name << " [[ sample_mask ]]";
-			m_StructDefinitions[""].m_Members.push_back(oss.str());
+			m_StructDefinitions[""].m_Members.push_back(std::make_pair(name,oss.str()));
 			break;
 		}
 
@@ -1187,7 +1325,7 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 		{
 			std::ostringstream oss;
 			oss << "uint3 " << name << " [[ thread_position_in_grid ]]";
-			m_StructDefinitions[""].m_Members.push_back(oss.str());
+			m_StructDefinitions[""].m_Members.push_back(std::make_pair(name, oss.str()));
 			break;
 		}
 
@@ -1195,7 +1333,7 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 		{
 			std::ostringstream oss;
 			oss << "uint3 " << name << " [[ threadgroup_position_in_grid ]]";
-			m_StructDefinitions[""].m_Members.push_back(oss.str());
+			m_StructDefinitions[""].m_Members.push_back(std::make_pair(name, oss.str()));
 			break;
 		}
 
@@ -1203,27 +1341,42 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 		{
 			std::ostringstream oss;
 			oss << "uint3 " << name << " [[ thread_position_in_threadgroup ]]";
-			m_StructDefinitions[""].m_Members.push_back(oss.str());
+			m_StructDefinitions[""].m_Members.push_back(std::make_pair(name, oss.str()));
 			break;
 		}
 		if (psOperand->eSpecialName == NAME_RENDER_TARGET_ARRAY_INDEX)
 		{
 			std::ostringstream oss;
 			oss << "uint " << name << " [[ render_target_array_index ]]";
-			m_StructDefinitions[""].m_Members.push_back(oss.str());
+			m_StructDefinitions[""].m_Members.push_back(std::make_pair(name, oss.str()));
+			break;
+		}
+		if (psOperand->eType == OPERAND_TYPE_INPUT_DOMAIN_POINT)
+		{
+			std::ostringstream oss;
+			std::string patchPositionType = psShader->sInfo.eTessDomain == TESSELLATOR_DOMAIN_QUAD ? "float2 " : "float3 ";
+			oss << patchPositionType << name << " [[ position_in_patch ]]";
+			m_StructDefinitions[""].m_Members.push_back(std::make_pair(name, oss.str()));
 			break;
 		}
 		if (psOperand->eType == OPERAND_TYPE_INPUT_THREAD_ID_IN_GROUP_FLATTENED)
 		{
 			std::ostringstream oss;
 			oss << "uint " << name << " [[ thread_index_in_threadgroup ]]";
-			m_StructDefinitions[""].m_Members.push_back(oss.str());
+			m_StructDefinitions[""].m_Members.push_back(std::make_pair(name, oss.str()));
 			break;
 		}
-		
+		if (psOperand->eSpecialName == NAME_VIEWPORT_ARRAY_INDEX)
+		{
+			std::ostringstream oss;
+			oss << "uint " << name << " [[ viewport_array_index ]]";
+			m_StructDefinitions[""].m_Members.push_back(std::make_pair(name, oss.str()));
+			break;
+		}
+
 		if(psDecl->eOpcode == OPCODE_DCL_INPUT_PS_SIV && psOperand->eSpecialName == NAME_POSITION)
 		{
-			m_StructDefinitions[""].m_Members.push_back("float4 mtl_FragCoord [[ position ]]");
+			m_StructDefinitions[""].m_Members.push_back(std::make_pair("mtl_FragCoord", "float4 mtl_FragCoord [[ position ]]"));
 			break;
 		}
 
@@ -1235,8 +1388,23 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 			}
 		}
 
-        const ShaderInfo::InOutSignature *psSig = NULL;
-        psContext->psShader->sInfo.GetInputSignatureFromRegister(ui32Reg, ui32CompMask, &psSig);
+		int regSpace = psDecl->asOperands[0].GetRegisterSpace(psContext);
+
+		const ShaderInfo::InOutSignature *psSig = NULL;
+
+		// This falls within the specified index ranges. The default is 0 if no input range is specified
+		if (regSpace == 0)
+			psContext->psShader->sInfo.GetInputSignatureFromRegister(ui32Reg, ui32CompMask, &psSig);
+		else
+			psContext->psShader->sInfo.GetPatchConstantSignatureFromRegister(ui32Reg, ui32CompMask, &psSig);
+
+		if (!psSig)
+			break;
+
+        // fragment shader cannot reference builtins generated by vertex program (with obvious exception of position)
+        // TODO: some visible error? handle more builtins?
+        if (psContext->psShader->eShaderType == PIXEL_SHADER  && !strncmp(psSig->semanticName.c_str(), "PSIZE", 5))
+            break;
         
         int iNumComponents = psOperand->GetNumInputElements(psContext);
 		psShader->acInputDeclared[0][ui32Reg] = (char)psSig->ui32Mask;
@@ -1244,9 +1412,10 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 		std::string typeName = BuildOperandTypeString(psOperand->eMinPrecision, psSig->eComponentType, iNumComponents);
 
 		std::string semantic;
-		if (psContext->psShader->eShaderType == VERTEX_SHADER)
+		if (psContext->psShader->eShaderType == VERTEX_SHADER || psContext->psShader->eShaderType == HULL_SHADER || psContext->psShader->eShaderType == DOMAIN_SHADER)
 		{
 			std::ostringstream oss;
+			// VERTEX_SHADER hardcoded on purpose
 			uint32_t loc = psContext->psDependencies->GetVaryingLocation(name, VERTEX_SHADER, true);
 			oss << "attribute(" << loc << ")";
 			semantic = oss.str();
@@ -1261,9 +1430,6 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 			if (psOperand->iPSInOut && name.size() == 10 && !strncmp(name.c_str(), "SV_Target", 9))
 			{
 				// Metal allows color(X) declared in input/output structs
-				//
-				// TODO: Improve later when GLES3 support arrives, it requires
-				// single declaration through inout
 				oss << "color(xlt_remap_i[" << psSig->ui32SemanticIndex << "])";
                 m_NeedFBInputRemapDecl = true;
 			}
@@ -1281,20 +1447,40 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 		}
 
 		std::string declString;
-		if ((OPERAND_INDEX_DIMENSION)psOperand->iIndexDims == INDEX_2D)
+		if ((OPERAND_INDEX_DIMENSION)psOperand->iIndexDims == INDEX_2D && psOperand->eType != OPERAND_TYPE_INPUT_CONTROL_POINT && psContext->psShader->eShaderType != HULL_SHADER)
 		{
 			std::ostringstream oss;
-			oss << typeName << " " << name << " [ " << psOperand->aui32ArraySizes[0] << " ] " << " [[ " << semantic << " ]] " << interpolation;
+			oss << typeName << " " << name << " [ " << psOperand->aui32ArraySizes[0] << " ] ";
+
+			if (psContext->psShader->eShaderType != HULL_SHADER)
+				oss << " [[ " << semantic << " ]] " << interpolation;
 			declString = oss.str();
 		}
 		else
 		{
 			std::ostringstream oss;
-			oss << typeName << " " << name << " [[ " << semantic << " ]] " << interpolation;
+			oss << typeName << " " << name;
+			if (psContext->psShader->eShaderType != HULL_SHADER)
+				oss << " [[ " << semantic << " ]] " << interpolation;
 			declString = oss.str();
 		}
 
-		m_StructDefinitions[GetInputStructName()].m_Members.push_back(declString);
+		if (psOperand->eType == OPERAND_TYPE_INPUT_PATCH_CONSTANT && psContext->psShader->eShaderType == DOMAIN_SHADER)
+		{
+			m_StructDefinitions["Mtl_PatchConstant"].m_Members.push_back(std::make_pair(name, declString));
+		}
+		else if (psOperand->eType == OPERAND_TYPE_INPUT_CONTROL_POINT && psContext->psShader->eShaderType == DOMAIN_SHADER)
+		{
+			m_StructDefinitions["Mtl_ControlPoint"].m_Members.push_back(std::make_pair(name, declString));
+		}
+		else if (psContext->psShader->eShaderType == HULL_SHADER)
+		{
+			m_StructDefinitions[GetInputStructName()].m_Members.push_back(std::make_pair(name, declString));
+		}
+		else
+		{
+			m_StructDefinitions[GetInputStructName()].m_Members.push_back(std::make_pair(name, declString));
+		}
 
 		HandleInputRedirect(psDecl, BuildOperandTypeString(psOperand->eMinPrecision, INOUT_COMPONENT_FLOAT32, 4));
 		break;
@@ -1357,22 +1543,22 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 				case 'f':
 				case 'F':
 					oss << "float4 " << sv.name << " [[ color(xlt_remap_i["<< idx <<"]) ]]";
-					m_StructDefinitions[""].m_Members.push_back(oss.str());
+					m_StructDefinitions[""].m_Members.push_back(std::make_pair(sv.name, oss.str()));
 					break;
 				case 'h':
 				case 'H':
 					oss << "half4 " << sv.name << " [[ color(xlt_remap_i[" << idx << "]) ]]";
-					m_StructDefinitions[""].m_Members.push_back(oss.str());
+					m_StructDefinitions[""].m_Members.push_back(std::make_pair(sv.name, oss.str()));
 					break;
 				case 'i':
 				case 'I':
 					oss << "int4 " << sv.name << " [[ color(xlt_remap_i[" << idx << "]) ]]";
-					m_StructDefinitions[""].m_Members.push_back(oss.str());
+					m_StructDefinitions[""].m_Members.push_back(std::make_pair(sv.name, oss.str()));
 					break;
 				case 'u':
 				case 'U':
 					oss << "uint4 " << sv.name << " [[ color(xlt_remap_i[" << idx << "]) ]]";
-					m_StructDefinitions[""].m_Members.push_back(oss.str());
+					m_StructDefinitions[""].m_Members.push_back(std::make_pair(sv.name, oss.str()));
 					break;
 				default:
 					break;
@@ -1400,9 +1586,9 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 	{
 		uint32_t ui32Flags = psDecl->value.ui32GlobalFlags;
 
-		if (ui32Flags & GLOBAL_FLAG_FORCE_EARLY_DEPTH_STENCIL)
+		if (ui32Flags & GLOBAL_FLAG_FORCE_EARLY_DEPTH_STENCIL && psContext->psShader->eShaderType == PIXEL_SHADER)
 		{
-//			bcatcstr(glsl, "layout(early_fragment_tests) in;\n");
+			psShader->sInfo.bEarlyFragmentTests = true;
 		}
 		if (!(ui32Flags & GLOBAL_FLAG_REFACTORING_ALLOWED))
 		{
@@ -1412,7 +1598,6 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 		if (ui32Flags & GLOBAL_FLAG_ENABLE_DOUBLE_PRECISION_FLOAT_OPS)
 		{
 			// Not supported on Metal
-//			bcatcstr(glsl, "#extension GL_ARB_gpu_shader_fp64 : enable\n");
 //			psShader->fp64 = 1;
 		}
 		break;
@@ -1427,17 +1612,27 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 	}
 	case OPCODE_DCL_TESS_OUTPUT_PRIMITIVE:
 	{
-		// Not supported
+		if(psContext->psShader->eShaderType == HULL_SHADER)
+		{
+			psContext->psShader->sInfo.eTessOutPrim = psDecl->value.eTessOutPrim;
+			if (psContext->psShader->sInfo.eTessOutPrim == TESSELLATOR_OUTPUT_TRIANGLE_CW)
+				psContext->psShader->sInfo.eTessOutPrim = TESSELLATOR_OUTPUT_TRIANGLE_CCW;
+			else if (psContext->psShader->sInfo.eTessOutPrim == TESSELLATOR_OUTPUT_TRIANGLE_CCW)
+				psContext->psShader->sInfo.eTessOutPrim = TESSELLATOR_OUTPUT_TRIANGLE_CW;
+		}
 		break;
 	}
 	case OPCODE_DCL_TESS_DOMAIN:
 	{
-		// Not supported
+		psContext->psShader->sInfo.eTessDomain = psDecl->value.eTessDomain;
+
+		if (psContext->psShader->sInfo.eTessDomain == TESSELLATOR_DOMAIN_ISOLINE)
+			psContext->m_Reflection.OnDiagnostics("Metal Tessellation: domain(\"isoline\") not supported.", 0, true);
 		break;
 	}
 	case OPCODE_DCL_TESS_PARTITIONING:
 	{
-		// Not supported
+		psContext->psShader->sInfo.eTessPartitioning = psDecl->value.eTessPartitioning;
 		break;
 	}
 	case OPCODE_DCL_GS_OUTPUT_PRIMITIVE_TOPOLOGY:
@@ -1475,69 +1670,38 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 	{
 		// TODO: This is only ever accessed as a float currently. Do trickery if we ever see ints accessed from an array.
 		// Walk through all the chunks we've seen in this phase.
-		ShaderPhase &sp = psShader->asPhases[psContext->currentPhase];
-		std::for_each(sp.m_ConstantArrayInfo.m_Chunks.begin(), sp.m_ConstantArrayInfo.m_Chunks.end(), [this](const std::pair<uint32_t, ConstantArrayChunk> &chunk)
-		{
-			bstring glsl = *psContext->currentGLSLString;
-			uint32_t componentCount = chunk.second.m_ComponentCount;
-			// Just do the declaration here and contents to earlyMain.
-			if (componentCount == 1)
-				bformata(glsl, "constant float ImmCB_%d_%d_%d[%d] =\n{\n", psContext->currentPhase, chunk.first, chunk.second.m_Rebase, chunk.second.m_Size);
-			else
-				bformata(glsl, "constant float%d ImmCB_%d_%d_%d[%d] =\n{\n", componentCount, psContext->currentPhase, chunk.first, chunk.second.m_Rebase, chunk.second.m_Size);
 
-			Declaration *psDecl = psContext->psShader->asPhases[psContext->currentPhase].m_ConstantArrayInfo.m_OrigDeclaration;
-			if (componentCount == 1)
-			{
-				for (uint32_t i = 0; i < chunk.second.m_Size; i++)
-				{
-					if (i != 0)
-						bcatcstr(glsl, ",\n");
-					float val[4] = {
-						*(float*)&psDecl->asImmediateConstBuffer[i + chunk.first].a,
-						*(float*)&psDecl->asImmediateConstBuffer[i + chunk.first].b,
-						*(float*)&psDecl->asImmediateConstBuffer[i + chunk.first].c,
-						*(float*)&psDecl->asImmediateConstBuffer[i + chunk.first].d
-					};
-					if (fpcheck(val[chunk.second.m_Rebase]))
-						bformata(glsl, "\tas_type<float>(0x%Xu)", *(uint32_t *)&val[chunk.second.m_Rebase]);
-					else
-					{
-						bcatcstr(glsl, "\t");
-						HLSLcc::PrintFloat(glsl, val[chunk.second.m_Rebase]);
-					}
-				}
-				bcatcstr(glsl, "\n};\n");
-			}
-			else
-			{
-				for (uint32_t i = 0; i < chunk.second.m_Size; i++)
+		bstring glsl = *psContext->currentGLSLString;
+		bformata(glsl, "constant float4 ImmCB_%d[%d] =\n{\n", psContext->currentPhase, psDecl->asImmediateConstBuffer.size());
+		bool isFirst = true;
+		std::for_each(psDecl->asImmediateConstBuffer.begin(), psDecl->asImmediateConstBuffer.end(), [&](const ICBVec4 &data)
 		{
-					if (i != 0)
-						bcatcstr(glsl, ",\n");
+			if (!isFirst)
+			{
+				bcatcstr(glsl, ",\n");
+			}
+			isFirst = false;
+
 			float val[4] = {
-						*(float*)&psDecl->asImmediateConstBuffer[i + chunk.first].a,
-						*(float*)&psDecl->asImmediateConstBuffer[i + chunk.first].b,
-						*(float*)&psDecl->asImmediateConstBuffer[i + chunk.first].c,
-						*(float*)&psDecl->asImmediateConstBuffer[i + chunk.first].d
+				*(float*)&data.a,
+				*(float*)&data.b,
+				*(float*)&data.c,
+				*(float*)&data.d
 			};
-					bformata(glsl, "\tfloat%d(", componentCount);
-					for (uint32_t k = 0; k < componentCount; k++)
+
+			bformata(glsl, "\tfloat4(");
+			for (uint32_t k = 0; k < 4; k++)
 			{
-						if (k != 0)
-							bcatcstr(glsl, ", ");
+				if (k != 0)
+					bcatcstr(glsl, ", ");
 				if (fpcheck(val[k]))
-							bformata(glsl, "as_type<float>(0x%Xu)", *(uint32_t *)&val[k + chunk.second.m_Rebase]);
+					bformata(glsl, "as_type<float>(0x%Xu)", *(uint32_t *)&val[k]);
 				else
-							HLSLcc::PrintFloat(glsl, val[k + chunk.second.m_Rebase]);
+					HLSLcc::PrintFloat(glsl, val[k]);
 			}
-					bcatcstr(glsl, ")");
-			}
-				bcatcstr(glsl, "\n};\n");
-		}
-
+			bcatcstr(glsl, ")");
 		});
-
+		bcatcstr(glsl, "\n};\n");
 		break;
 	}
 	case OPCODE_DCL_HS_FORK_PHASE_INSTANCE_COUNT:
@@ -1627,6 +1791,10 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 			}
 	
 			startReg = psDecl->asOperands[0].ui32RegisterNumber;
+			oldString = psContext->currentGLSLString;
+			psContext->currentGLSLString = &psContext->psShader->asPhases[psContext->currentPhase].earlyMain;
+			psContext->AddIndentation();
+			psContext->currentGLSLString = oldString;
 			bformata(psContext->psShader->asPhases[psContext->currentPhase].earlyMain, "%s4 phase%d_%sput%d_%d[%d];\n", type, psContext->currentPhase, isInput ? "In" : "Out", regSpace, startReg, psDecl->value.ui32IndexRange);
 			oldString = psContext->currentGLSLString;
 			glsl = isInput ? psContext->psShader->asPhases[psContext->currentPhase].earlyMain : psContext->psShader->asPhases[psContext->currentPhase].postShaderCode;
@@ -1700,7 +1868,7 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 				}
 				else
 				{
-					realName = psContext->GetDeclaredOutputName(&psDecl->asOperands[0], &dummy, NULL, NULL, 1);
+					realName = psContext->GetDeclaredOutputName(&psDecl->asOperands[0], &dummy, NULL, NULL, 0);
 
 					psContext->AddIndentation();
 					bcatcstr(glsl, realName.c_str());
@@ -1785,12 +1953,16 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 	}
 	case OPCODE_DCL_INPUT_CONTROL_POINT_COUNT:
 	{
-		// Not supported
+		if(psContext->psShader->eShaderType == HULL_SHADER)
+			psShader->sInfo.ui32TessInputControlPointCount = psDecl->value.ui32MaxOutputVertexCount;
+		else if(psContext->psShader->eShaderType == DOMAIN_SHADER)
+			psShader->sInfo.ui32TessOutputControlPointCount = psDecl->value.ui32MaxOutputVertexCount;
 		break;
 	}
 	case OPCODE_DCL_OUTPUT_CONTROL_POINT_COUNT:
 	{
-		// Not supported
+		if(psContext->psShader->eShaderType == HULL_SHADER)
+			psShader->sInfo.ui32TessOutputControlPointCount = psDecl->value.ui32MaxOutputVertexCount;
 		break;
 	}
 	case OPCODE_HS_FORK_PHASE:
@@ -1811,19 +1983,30 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 		{
 			// for some reason we have some samplers start with "sampler" and some not
 			const bool startsWithSampler = name.find("sampler") == 0;
-			const uint32_t slot = m_SamplerSlots.GetBindingSlot(psDecl->asOperands[0].ui32RegisterNumber, BindingSlotAllocator::Texture);
-			std::ostringstream oss; oss << "sampler " << (startsWithSampler ? "" : "sampler") << name << " [[ sampler (" << slot << ") ]]";
-			m_StructDefinitions[""].m_Members.push_back(oss.str());
 
-			SamplerDesc desc = { name, psDecl->asOperands[0].ui32RegisterNumber, slot };
-			m_Samplers.push_back(desc);
+			std::ostringstream samplerOss;
+			samplerOss << (startsWithSampler ? "" : "sampler") << name;
+			std::string samplerName = samplerOss.str();
+
+			if (!psContext->psDependencies->IsMemberDeclared(samplerName))
+			{
+				const uint32_t slot = m_SamplerSlots.GetBindingSlot(psDecl->asOperands[0].ui32RegisterNumber, BindingSlotAllocator::Texture);
+				std::ostringstream oss;
+				oss << "sampler " << samplerName << " [[ sampler (" << slot << ") ]]";
+
+				m_StructDefinitions[""].m_Members.push_back(std::make_pair(samplerName, oss.str()));
+
+				SamplerDesc desc = { name, psDecl->asOperands[0].ui32RegisterNumber, slot };
+				m_Samplers.push_back(desc);
+			}
 		}
 
 		break;
 	}
 	case OPCODE_DCL_HS_MAX_TESSFACTOR:
 	{
-		// Not supported
+		if(psContext->psShader->eShaderType == HULL_SHADER && psContext->psDependencies)
+			psContext->psDependencies->fMaxTessFactor = psDecl->value.fMaxTessFactor;
 		break;
 	}
 	case OPCODE_DCL_UNORDERED_ACCESS_VIEW_TYPED:
@@ -1839,16 +2022,40 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 		}
 		std::string texName = ResourceName(RGROUP_UAV, psDecl->asOperands[0].ui32RegisterNumber);
 		std::string samplerTypeName = TranslateResourceDeclaration(psContext, psDecl, texName, false, true);
-		uint32_t slot = m_TextureSlots.GetBindingSlot(psDecl->asOperands[0].ui32RegisterNumber, BindingSlotAllocator::UAV);		std::ostringstream oss;
-		oss << samplerTypeName << " " << texName
-			<< " [[ texture (" << slot << ") ]] ";
+		if (!psContext->psDependencies->IsMemberDeclared(texName))
+		{
+			uint32_t slot = m_TextureSlots.GetBindingSlot(psDecl->asOperands[0].ui32RegisterNumber, BindingSlotAllocator::UAV);
 
-		m_StructDefinitions[""].m_Members.push_back(oss.str());
+			std::ostringstream oss;
+			oss << samplerTypeName << " " << texName << " [[ texture(" << slot << ") ]] ";
 
-		// TODO: translate psDecl->value.eResourceDimension into HLSLCC_TEX_DIMENSION
-		TextureSamplerDesc desc = {texName, (int)slot, -1, TD_2D, true};
-		m_Textures.push_back(desc);
+			m_StructDefinitions[""].m_Members.push_back(std::make_pair(texName, oss.str()));
 
+			HLSLCC_TEX_DIMENSION texDim = TD_INT;
+			switch (psDecl->value.eResourceDimension)
+			{
+			default: break;
+			case RESOURCE_DIMENSION_TEXTURE2D:
+			case RESOURCE_DIMENSION_TEXTURE2DMS:
+				texDim = TD_2D;
+				break;
+			case RESOURCE_DIMENSION_TEXTURE2DARRAY:
+			case RESOURCE_DIMENSION_TEXTURE2DMSARRAY:
+				texDim = TD_2DARRAY;
+				break;
+			case RESOURCE_DIMENSION_TEXTURE3D:
+				texDim = TD_3D;
+				break;
+			case RESOURCE_DIMENSION_TEXTURECUBE:
+				texDim = TD_CUBE;
+				break;
+			case RESOURCE_DIMENSION_TEXTURECUBEARRAY:
+				texDim = TD_CUBEARRAY;
+				break;
+			}
+			TextureSamplerDesc desc = {texName, (int)slot, -1, texDim, false, false, true};
+			m_Textures.push_back(desc);
+		}
 		break;
 	}
 
@@ -1877,7 +2084,7 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
 		ShaderVarType* psVarType = &psShader->sInfo.sGroupSharedVarType[psDecl->asOperands[0].ui32RegisterNumber];
 		std::ostringstream oss;
 		oss << "uint value[" << psDecl->sTGSM.ui32Stride / 4 << "]";
-		m_StructDefinitions[TranslateOperand(&psDecl->asOperands[0], TO_FLAG_NAME_ONLY) + "_Type"].m_Members.push_back(oss.str());
+		m_StructDefinitions[TranslateOperand(&psDecl->asOperands[0], TO_FLAG_NAME_ONLY) + "_Type"].m_Members.push_back(std::make_pair("value", oss.str()));
 		m_StructDefinitions[""].m_Dependencies.push_back(TranslateOperand(&psDecl->asOperands[0], TO_FLAG_NAME_ONLY) + "_Type");
 		oss.str("");
 		oss << "threadgroup " << TranslateOperand(&psDecl->asOperands[0], TO_FLAG_NAME_ONLY)
@@ -1971,24 +2178,36 @@ std::string ToMetal::ResourceName(ResourceGroup group, const uint32_t ui32Regist
 
 void ToMetal::TranslateResourceTexture(const Declaration* psDecl, uint32_t samplerCanDoShadowCmp, HLSLCC_TEX_DIMENSION texDim)
 {
-
 	std::string texName = ResourceName(RGROUP_TEXTURE, psDecl->asOperands[0].ui32RegisterNumber);
-	std::string samplerTypeName = TranslateResourceDeclaration(psContext,
-		psDecl, texName, (samplerCanDoShadowCmp && psDecl->ui32IsShadowTex), false);
+	const bool isDepthSampler = (samplerCanDoShadowCmp && psDecl->ui32IsShadowTex);
+	std::string samplerTypeName = TranslateResourceDeclaration(psContext, psDecl, texName, isDepthSampler, false);
 
-	uint32_t slot = m_TextureSlots.GetBindingSlot(psDecl->asOperands[0].ui32RegisterNumber, BindingSlotAllocator::Texture);
-	std::ostringstream oss;
-	oss << samplerTypeName << " " << texName
-		<< " [[ texture (" << slot << ") ]] ";
+    bool isMS = false;
+    switch(psDecl->value.eResourceDimension)
+    {
+        default:
+            break;
+        case RESOURCE_DIMENSION_TEXTURE2DMS:
+        case RESOURCE_DIMENSION_TEXTURE2DMSARRAY:
+            isMS = true;
+            break;
+    }
 
-	m_StructDefinitions[""].m_Members.push_back(oss.str());
+	if (!psContext->psDependencies->IsMemberDeclared(texName))
+	{
+		uint32_t slot = m_TextureSlots.GetBindingSlot(psDecl->asOperands[0].ui32RegisterNumber, BindingSlotAllocator::Texture);
 
-	TextureSamplerDesc desc = {texName, (int)slot, -1, texDim, false};
-	m_Textures.push_back(desc);
+		std::ostringstream oss;
+		oss << samplerTypeName << " " << texName << " [[ texture(" << slot << ") ]] ";
 
-	if (samplerCanDoShadowCmp && psDecl->ui32IsShadowTex)
-		EnsureShadowSamplerDeclared();
+		m_StructDefinitions[""].m_Members.push_back(std::make_pair(texName, oss.str()));
 
+		TextureSamplerDesc desc = {texName, (int)slot, -1, texDim, isMS, isDepthSampler, false};
+		m_Textures.push_back(desc);
+
+		if (isDepthSampler)
+			EnsureShadowSamplerDeclared();
+	}
 }
 
 void ToMetal::DeclareResource(const Declaration *psDecl)
@@ -2000,19 +2219,23 @@ void ToMetal::DeclareResource(const Declaration *psDecl)
             // Fake single comp 32bit texel buffers by using raw buffer
             DeclareBufferVariable(psDecl, true, false);
             break;
-            
-			/* TODO: re-enable this code for buffer textures when sripting API has proper support for it
-            uint32_t slot = m_TextureSlots.GetBindingSlot(psDecl->asOperands[0].ui32RegisterNumber, BindingSlotAllocator::Texture);
-			std::string texName = TranslateOperand(&psDecl->asOperands[0], TO_FLAG_NAME_ONLY);
-			std::ostringstream oss;
-			oss << "device " << TranslateResourceDeclaration(psContext, psDecl, texName, false, false);
 
-			oss << texName << " [[ texture(" << slot << ") ]]";
+			// TODO: re-enable this code for buffer textures when sripting API has proper support for it
+#if 0
+			if (!psContext->psDependencies->IsMemberDeclared(texName))
+			{
+				uint32_t slot = m_TextureSlots.GetBindingSlot(psDecl->asOperands[0].ui32RegisterNumber, BindingSlotAllocator::Texture);
+				std::string texName = TranslateOperand(&psDecl->asOperands[0], TO_FLAG_NAME_ONLY);
+				std::ostringstream oss;
+				oss << "device " << TranslateResourceDeclaration(psContext, psDecl, texName, false, false);
 
-			m_StructDefinitions[""].m_Members.push_back(oss.str());
-			psContext->m_Reflection.OnTextureBinding(texName, slot, TD_2D, false); //TODO: correct HLSLCC_TEX_DIMENSION?
-			break;*/
+				oss << texName << " [[ texture(" << slot << ") ]]";
 
+				m_StructDefinitions[""].m_Members.push_back(std::make_pair(texName, oss.str()));
+				psContext->m_Reflection.OnTextureBinding(texName, slot, TD_2D, false); //TODO: correct HLSLCC_TEX_DIMENSION?
+			}
+			break;
+#endif
 		}
 		default:
 			ASSERT(0);
@@ -2161,28 +2384,28 @@ void ToMetal::DeclareOutput(const Declaration *psDecl)
 		{
 			std::ostringstream oss;
 			oss << type << " " << name << " [[ sample_mask ]]";
-			m_StructDefinitions[GetOutputStructName()].m_Members.push_back(oss.str());
+			m_StructDefinitions[GetOutputStructName()].m_Members.push_back(std::make_pair(name, oss.str()));
 			break;
 		}
 		case OPERAND_TYPE_OUTPUT_DEPTH:
 		{
 			std::ostringstream oss;
 			oss << type << " " << name << " [[ depth(any) ]]";
-			m_StructDefinitions[GetOutputStructName()].m_Members.push_back(oss.str());
+			m_StructDefinitions[GetOutputStructName()].m_Members.push_back(std::make_pair(name, oss.str()));
 			break;
 		}
 		case OPERAND_TYPE_OUTPUT_DEPTH_GREATER_EQUAL:
 		{
 			std::ostringstream oss;
 			oss << type << " " << name << " [[ depth(greater) ]]";
-			m_StructDefinitions[GetOutputStructName()].m_Members.push_back(oss.str());
+			m_StructDefinitions[GetOutputStructName()].m_Members.push_back(std::make_pair(name, oss.str()));
 			break;
 		}
 		case OPERAND_TYPE_OUTPUT_DEPTH_LESS_EQUAL:
 		{
 			std::ostringstream oss;
 			oss << type << " " << name << " [[ depth(less) ]]";
-			m_StructDefinitions[GetOutputStructName()].m_Members.push_back(oss.str());
+			m_StructDefinitions[GetOutputStructName()].m_Members.push_back(std::make_pair(name, oss.str()));
 			break;
 		}
 		default:
@@ -2190,27 +2413,46 @@ void ToMetal::DeclareOutput(const Declaration *psDecl)
 			std::ostringstream oss;
 			oss << type << " " << name << " [[ color(xlt_remap_o[" << psSignature->ui32SemanticIndex << "]) ]]";
             m_NeedFBOutputRemapDecl = true;
-			m_StructDefinitions[GetOutputStructName()].m_Members.push_back(oss.str());
+			m_StructDefinitions[GetOutputStructName()].m_Members.push_back(std::make_pair(name, oss.str()));
 		}
 		}
 		break;
 	}
 	case VERTEX_SHADER:
+	case DOMAIN_SHADER:
+	case HULL_SHADER:
 	{
+		std::string out = GetOutputStructName();
+		bool isTessKernel = (psContext->flags & HLSLCC_FLAG_METAL_TESSELLATION) != 0 && (psContext->psShader->eShaderType == HULL_SHADER || psContext->psShader->eShaderType == VERTEX_SHADER);
+
 		std::ostringstream oss;
 		oss << type << " " << name;
-		if (psSignature->eSystemValueType == NAME_POSITION || (psSignature->semanticName == "POS" && psOperand->ui32RegisterNumber == 0 ))
+		if (!isTessKernel && (psSignature->eSystemValueType == NAME_POSITION || psSignature->semanticName == "POS") && psOperand->ui32RegisterNumber == 0)
 			oss << " [[ position ]]";
-		else if (psSignature->eSystemValueType == NAME_UNDEFINED && psSignature->semanticName == "PSIZE" && psSignature->ui32SemanticIndex == 0 )
+		else if (!isTessKernel && psSignature->eSystemValueType == NAME_UNDEFINED && psSignature->semanticName == "PSIZE" && psSignature->ui32SemanticIndex == 0 )
 			oss << " [[ point_size ]]";
 		else
 			oss << " [[ user(" << name << ") ]]";
-		m_StructDefinitions[GetOutputStructName()].m_Members.push_back(oss.str());
+		m_StructDefinitions[out].m_Members.push_back(std::make_pair(name, oss.str()));
+
+		// For preserving data layout, declare output struct as domain shader input, too
+		if (psContext->psShader->eShaderType == HULL_SHADER)
+		{
+			out += "In";
+
+			std::ostringstream oss;
+			oss << type << " " << name;
+
+			// VERTEX_SHADER hardcoded on purpose
+			uint32_t loc = psContext->psDependencies->GetVaryingLocation(name, VERTEX_SHADER, true);
+			oss << " [[ " << "attribute(" << loc << ")" << " ]] ";
+
+			psContext->m_Reflection.OnInputBinding(name, loc);
+			m_StructDefinitions[out].m_Members.push_back(std::make_pair(name, oss.str()));
+		}
 		break;
 	}
 	case GEOMETRY_SHADER:
-	case DOMAIN_SHADER:
-	case HULL_SHADER:
 	default:
 		ASSERT(0);
 		break;
@@ -2226,7 +2468,7 @@ void ToMetal::EnsureShadowSamplerDeclared()
 	if (m_ShadowSamplerDeclared)
 		return;
 
-	if((psContext->flags & HLSLCC_FLAG_METAL_SHADOW_SAMPLER_LINEAR) != 0)
+	if((psContext->flags & HLSLCC_FLAG_METAL_SHADOW_SAMPLER_LINEAR) != 0 || (psContext->psShader->eShaderType == COMPUTE_SHADER))
 		m_ExtraGlobalDefinitions += "constexpr sampler _mtl_xl_shadow_sampler(address::clamp_to_edge, filter::linear, compare_func::greater_equal);\n";
 	else
 		m_ExtraGlobalDefinitions += "constexpr sampler _mtl_xl_shadow_sampler(address::clamp_to_edge, filter::nearest, compare_func::greater_equal);\n";

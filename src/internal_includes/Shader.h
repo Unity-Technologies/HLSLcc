@@ -145,7 +145,8 @@ public:
 		ui32CurrentVertexOutputStream(0),
 		textureSamplers(),
 		aui32StructuredBufferBindingPoints(MAX_RESOURCE_BINDINGS, 0),
-		ui32CurrentStructuredBufferIndex()
+		ui32CurrentStructuredBufferIndex(),
+		m_DummySamplerDeclared(false)
 	{
 	}
 
@@ -256,6 +257,8 @@ public:
 	std::vector<char> psFloat10TempSizes; // ...and for min10floats
 	std::vector<char> psDoubleTempSizes; // ...and for doubles
 	std::vector<char> psBoolTempSizes; // ... and for bools
+
+	bool m_DummySamplerDeclared; // If true, the shader doesn't declare any samplers but uses texelFetch and we have added a dummy sampler for Vulkan for that.
 
 private:
 	void DoIOOverlapOperand(ShaderPhase *psPhase, Operand *psOperand);

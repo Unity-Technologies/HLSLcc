@@ -18,7 +18,7 @@ public:
 	virtual void TranslateDeclaration(const Declaration *psDecl) = 0;
 
 	// Translate system value type to name, return true if succeeded and no further translation is necessary
-	virtual bool TranslateSystemValue(const Operand *psOperand, const ShaderInfo::InOutSignature *sig, std::string &result, uint32_t *pui32IgnoreSwizzle, bool isIndexed, bool isInput, bool *outSkipPrefix = NULL) = 0;
+	virtual bool TranslateSystemValue(const Operand *psOperand, const ShaderInfo::InOutSignature *sig, std::string &result, uint32_t *pui32IgnoreSwizzle, bool isIndexed, bool isInput, bool *outSkipPrefix = NULL, int *iIgnoreRedirect = NULL) = 0;
 
 	// In GLSL, the input and output names cannot clash.
 	// Also, the output name of previous stage must match the input name of the next stage.

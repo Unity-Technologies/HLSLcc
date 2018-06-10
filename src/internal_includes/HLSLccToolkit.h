@@ -9,6 +9,7 @@
 #include "internal_includes/Operand.h"
 
 class HLSLCrossCompilerContext;
+struct ConstantBuffer;
 
 namespace HLSLcc
 {
@@ -20,11 +21,9 @@ namespace HLSLcc
 
 	const char * GetConstructorForType(const HLSLCrossCompilerContext *psContext, const SHADER_VARIABLE_TYPE eType, const int components, bool useGLSLPrecision = true);
 
-	const char * GetConstructorForTypeGLSL(const SHADER_VARIABLE_TYPE eType,
-		const int components, bool useGLSLPrecision);
+	const char * GetConstructorForTypeGLSL(const HLSLCrossCompilerContext *context, const SHADER_VARIABLE_TYPE eType, const int components, bool useGLSLPrecision);
 
-	const char * GetConstructorForTypeMetal(const SHADER_VARIABLE_TYPE eType,
-		const int components);
+	const char * GetConstructorForTypeMetal(const SHADER_VARIABLE_TYPE eType, const int components);
 
 	std::string GetMatrixTypeName(const HLSLCrossCompilerContext *psContext, const SHADER_VARIABLE_TYPE eBaseType, const int columns, const int rows);
 
@@ -55,7 +54,9 @@ namespace HLSLcc
 	// Returns true if the instruction adds 1 to the destination temp register
 	bool IsAddOneInstruction(const Instruction *psInst);
 
-	bool CanDoDirectCast(SHADER_VARIABLE_TYPE src, SHADER_VARIABLE_TYPE dest);
+	bool CanDoDirectCast(const HLSLCrossCompilerContext *context, SHADER_VARIABLE_TYPE src, SHADER_VARIABLE_TYPE dest);
+
+    bool IsUnityFlexibleInstancingBuffer(const ConstantBuffer* psCBuf);
 
 	// Helper function to print floats with full precision
 	void PrintFloat(bstring b, float f);

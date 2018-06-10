@@ -1,4 +1,5 @@
 
+#include "src/internal_includes/HLSLCrossCompilerContext.h"
 #include "src/internal_includes/LoopTransform.h"
 #include "src/internal_includes/Shader.h"
 #include "src/internal_includes/debug.h"
@@ -159,7 +160,7 @@ namespace HLSLcc
 	}
 
 	// Attempt to transform a single loop into a for-statement
-	static void AttemptLoopTransform(ShaderPhase &phase, LoopInfo &li)
+	static void AttemptLoopTransform(HLSLCrossCompilerContext *psContext, ShaderPhase &phase, LoopInfo &li)
 	{
 		// In order to transform a loop into a for, the following has to hold:
 		// - The loop must start with a comparison instruction where one of the src operands is a temp (induction variable), followed by OPCODE_BREAKC.
@@ -216,19 +217,22 @@ namespace HLSLcc
 		// but then fails miserably if the loop variable is used as an index to UAV loads/stores or some other cases ("array access too complex")
 		// This is also triggered when the driver optimizer sees "simple enough" arithmetics (whatever that is) done on the loop variable before indexing.
 		// So, disable for-loop transformation altogether whenever we see a UAV load or store inside a loop.
-		for (auto itr = li.m_StartLoop; itr != li.m_EndLoop; itr++)
+		if(psContext->psShader->eTargetLanguage >= LANG_400 && psContext->psShader->eTargetLanguage < LANG_GL_LAST && !psContext->IsVulkan())
 		{
-			switch (itr->eOpcode)
+			for (auto itr = li.m_StartLoop; itr != li.m_EndLoop; itr++)
 			{
-			case OPCODE_LD_RAW:
-			case OPCODE_LD_STRUCTURED:
-			case OPCODE_LD_UAV_TYPED:
-			case OPCODE_STORE_RAW:
-			case OPCODE_STORE_STRUCTURED:
-			case OPCODE_STORE_UAV_TYPED:
-				return; // Nope, can't do a for, not even a partial one.
-			default:
-				break;
+				switch (itr->eOpcode)
+				{
+				case OPCODE_LD_RAW:
+				case OPCODE_LD_STRUCTURED:
+				case OPCODE_LD_UAV_TYPED:
+				case OPCODE_STORE_RAW:
+				case OPCODE_STORE_STRUCTURED:
+				case OPCODE_STORE_UAV_TYPED:
+					return; // Nope, can't do a for, not even a partial one.
+				default:
+					break;
+				}
 			}
 		}
 
@@ -265,6 +269,13 @@ namespace HLSLcc
 		// Initializer must only write to one component
 		if (initializer && initializer->asOperands[0].GetNumSwizzleElements() != 1)
 			initializer = 0;
+		// Initializer data type must be int or uint
+		if (initializer)
+		{
+			SHADER_VARIABLE_TYPE dataType = initializer->asOperands[0].GetDataType(psContext);
+			if (dataType != SVT_INT && dataType != SVT_UINT)
+				return;
+		}
 
 		// Check that the initializer is only used within the range so we can move it to for statement
 		if (initializer)
@@ -343,12 +354,12 @@ namespace HLSLcc
 
 	}
 
-	void DoLoopTransform(ShaderPhase &phase)
+	void DoLoopTransform(HLSLCrossCompilerContext *psContext, ShaderPhase &phase)
 	{
 		Loops loops;
 		BuildLoopInfo(phase, loops);
 
-		std::for_each(loops.begin(), loops.end(), [&phase](LoopInfo &li)
+		std::for_each(loops.begin(), loops.end(), [&phase, psContext](LoopInfo &li)
 		{
 			// Some sanity checks: start and end points must be initialized, we shouldn't have any switches here, and each loop must have at least one exit point
 			// Also that there's at least 2 instructions in loop body
@@ -357,7 +368,7 @@ namespace HLSLcc
 			ASSERT(li.m_EndLoop > li.m_StartLoop + 2);
 			ASSERT(!li.m_IsSwitch);
 			ASSERT(!li.m_ExitPoints.empty());
-			AttemptLoopTransform(phase, li);
+			AttemptLoopTransform(psContext, phase, li);
 		});
 	}
 };

@@ -10,9 +10,14 @@
 #include "internal_includes/Shader.h"
 #include "internal_includes/Instruction.h"
 #include "internal_includes/toGLSL.h"
+#include <sstream>
 
 using namespace HLSLcc;
 
+// In toGLSLDeclaration.cpp
+const char* GetSamplerType(HLSLCrossCompilerContext* psContext,
+	const RESOURCE_DIMENSION eDimension,
+	const uint32_t ui32RegisterNumber);
 
 // This function prints out the destination name, possible destination writemask, assignment operator
 // and any possible conversions needed based on the eSrcType+ui32SrcElementCount (type and size of data expected to be coming in)
@@ -38,7 +43,7 @@ void ToGLSL::AddOpAssignToDestWithMask(const Operand* psDest,
 		// eg. MOV r0, c0.x => Temp[0] = vec4(c0.x);
 		if (ui32DestElementCount > ui32SrcElementCount)
 		{
-			bformata(glsl, " %s %s(", szAssignmentOp, GetConstructorForTypeGLSL(eDestDataType, ui32DestElementCount, false));
+			bformata(glsl, " %s %s(", szAssignmentOp, GetConstructorForTypeGLSL(psContext, eDestDataType, ui32DestElementCount, false));
 			*pNeedsParenthesis = 1;
 		}
 		else
@@ -53,36 +58,36 @@ void ToGLSL::AddOpAssignToDestWithMask(const Operand* psDest,
 	case SVT_INT16:
 		// Bitcasts from lower precisions are ambiguous
 		ASSERT(eSrcType != SVT_FLOAT10 && eSrcType != SVT_FLOAT16);
-		if (eSrcType == SVT_FLOAT && psContext->psShader->ui32MajorVersion > 3)
+		if (eSrcType == SVT_FLOAT && psContext->psShader->ui32MajorVersion > 3 && HaveBitEncodingOps(psContext->psShader->eTargetLanguage))
 		{
 			bformata(glsl, " %s floatBitsToInt(", szAssignmentOp);
 			// Cover cases where the HLSL language expects the rest of the components to be default-filled
 			if (ui32DestElementCount > ui32SrcElementCount)
 			{
-				bformata(glsl, "%s(", GetConstructorForTypeGLSL(eSrcType, ui32DestElementCount, false));
+				bformata(glsl, "%s(", GetConstructorForTypeGLSL(psContext, eSrcType, ui32DestElementCount, false));
 				(*pNeedsParenthesis)++;
 			}
 		}
 		else
-			bformata(glsl, " %s %s(", szAssignmentOp, GetConstructorForTypeGLSL(eDestDataType, ui32DestElementCount, false));
+			bformata(glsl, " %s %s(", szAssignmentOp, GetConstructorForTypeGLSL(psContext, eDestDataType, ui32DestElementCount, false));
 
 		(*pNeedsParenthesis)++;
 		break;
 	case SVT_UINT:
 	case SVT_UINT16:
 		ASSERT(eSrcType != SVT_FLOAT10 && eSrcType != SVT_FLOAT16);
-		if (eSrcType == SVT_FLOAT && psContext->psShader->ui32MajorVersion > 3)
+		if (eSrcType == SVT_FLOAT && psContext->psShader->ui32MajorVersion > 3 && HaveBitEncodingOps(psContext->psShader->eTargetLanguage))
 		{
 			bformata(glsl, " %s floatBitsToUint(", szAssignmentOp);
 			// Cover cases where the HLSL language expects the rest of the components to be default-filled
 			if (ui32DestElementCount > ui32SrcElementCount)
 			{
-				bformata(glsl, "%s(", GetConstructorForTypeGLSL(eSrcType, ui32DestElementCount, false));
+				bformata(glsl, "%s(", GetConstructorForTypeGLSL(psContext, eSrcType, ui32DestElementCount, false));
 				(*pNeedsParenthesis)++;
 			}
 		}
 		else
-			bformata(glsl, " %s %s(", szAssignmentOp, GetConstructorForTypeGLSL(eDestDataType, ui32DestElementCount, false));
+			bformata(glsl, " %s %s(", szAssignmentOp, GetConstructorForTypeGLSL(psContext, eDestDataType, ui32DestElementCount, false));
 
 		(*pNeedsParenthesis)++;
 		break;
@@ -91,7 +96,7 @@ void ToGLSL::AddOpAssignToDestWithMask(const Operand* psDest,
 	case SVT_FLOAT10:
 	case SVT_FLOAT16:
 		ASSERT(eSrcType != SVT_INT12 || (eSrcType != SVT_INT16 && eSrcType != SVT_UINT16));
-		if (psContext->psShader->ui32MajorVersion > 3)
+		if (psContext->psShader->ui32MajorVersion > 3 && HaveBitEncodingOps(psContext->psShader->eTargetLanguage))
 		{
 			if (eSrcType == SVT_INT)
 				bformata(glsl, " %s intBitsToFloat(", szAssignmentOp);
@@ -100,12 +105,12 @@ void ToGLSL::AddOpAssignToDestWithMask(const Operand* psDest,
 			// Cover cases where the HLSL language expects the rest of the components to be default-filled
 			if (ui32DestElementCount > ui32SrcElementCount)
 			{
-				bformata(glsl, "%s(", GetConstructorForTypeGLSL(eSrcType, ui32DestElementCount, false));
+				bformata(glsl, "%s(", GetConstructorForTypeGLSL(psContext, eSrcType, ui32DestElementCount, false));
 				(*pNeedsParenthesis)++;
 			}
 		}
 		else
-			bformata(glsl, " %s %s(", szAssignmentOp, GetConstructorForTypeGLSL(eDestDataType, ui32DestElementCount, false));
+			bformata(glsl, " %s %s(", szAssignmentOp, GetConstructorForTypeGLSL(psContext, eDestDataType, ui32DestElementCount, false));
 
 		(*pNeedsParenthesis)++;
 		break;
@@ -190,7 +195,7 @@ void ToGLSL::AddComparison(Instruction* psInst, ComparisonType eType,
 		{
 			AddAssignToDest(&psInst->asOperands[0], floatResult ? SVT_FLOAT : SVT_UINT, destElemCount, &needsParenthesis);
 
-			bcatcstr(glsl, GetConstructorForTypeGLSL(floatResult ? SVT_FLOAT : SVT_UINT, destElemCount, false));
+			bcatcstr(glsl, GetConstructorForTypeGLSL(psContext, floatResult ? SVT_FLOAT : SVT_UINT, destElemCount, false));
 			bcatcstr(glsl, "(");
 		}
 		bformata(glsl, "%s(", glslOpcode[eType]);
@@ -204,7 +209,10 @@ void ToGLSL::AddComparison(Instruction* psInst, ComparisonType eType,
 			bcatcstr(glsl, ")");
 			if (!floatResult)
 			{
-				bcatcstr(glsl, " * 0xFFFFFFFFu");
+				if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
+					bcatcstr(glsl, " * 0xFFFFFFFFu");
+				else
+					bcatcstr(glsl, " * 0xFFFFFFFF");
 			}
 		}
 
@@ -252,7 +260,12 @@ void ToGLSL::AddComparison(Instruction* psInst, ComparisonType eType,
 				if (floatResult)
 					bcatcstr(glsl, "1.0 : 0.0");
 				else
-					bcatcstr(glsl, "0xFFFFFFFFu : uint(0u)"); // Adreno can't handle 0u.
+				{
+					if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
+						bcatcstr(glsl, "0xFFFFFFFFu : uint(0u)"); // Adreno can't handle 0u.
+					else
+						bcatcstr(glsl, "0xFFFFFFFF : int(0)");
+				}
 				AddAssignPrologue(needsParenthesis, true);
 				bcatcstr(glsl, "; }\n");
 			}
@@ -283,7 +296,10 @@ void ToGLSL::AddComparison(Instruction* psInst, ComparisonType eType,
 			}
 			else
 			{
-				bcatcstr(glsl, ") ? 0xFFFFFFFFu : uint(0u)"); // Adreno can't handle 0u.
+				if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
+					bcatcstr(glsl, ") ? 0xFFFFFFFFu : uint(0u)"); // Adreno can't handle 0u.
+				else
+					bcatcstr(glsl, ") ? 0xFFFFFFFF : int(0)");
 			}
 		}
 		AddAssignPrologue(needsParenthesis);
@@ -357,7 +373,10 @@ void ToGLSL::AddMOVCBinaryOp(const Operand *pDest, const Operand *src0, Operand 
 		else
 		{
 			if (s0Type == SVT_UINT || s0Type == SVT_UINT16)
-				bcatcstr(glsl, " != uint(0u)) ? "); // Adreno doesn't understand 0u.
+				if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
+					bcatcstr(glsl, " != uint(0u)) ? "); // Adreno doesn't understand 0u.
+				else
+					bcatcstr(glsl, " != int(0)) ? ");
 			else if (s0Type == SVT_BOOL)
 				bcatcstr(glsl, ") ? ");
 			else
@@ -382,6 +401,27 @@ void ToGLSL::AddMOVCBinaryOp(const Operand *pDest, const Operand *src0, Operand 
 		// TODO: We can actually do this in one op using mix().
 		int srcElem = -1;
 		SHADER_VARIABLE_TYPE s0Type = src0->GetDataType(psContext);
+		
+		// Use an extra temp if dest is also one of the sources. Without this some swizzle combinations
+		// might alter the source before all components are handled.
+		const char* tempName = "hlslcc_movcTemp";
+		bool dstIsSrc1 = (pDest->eType == src1->eType) && (pDest->ui32RegisterNumber == src1->ui32RegisterNumber);
+		bool dstIsSrc2 = (pDest->eType == src2->eType) && (pDest->ui32RegisterNumber == src2->ui32RegisterNumber);
+		
+		if (dstIsSrc1 || dstIsSrc2)
+		{
+			psContext->AddIndentation();
+			bcatcstr(glsl, "{\n");
+			++psContext->indent;
+			psContext->AddIndentation();
+            int numComponents = (pDest->eType == OPERAND_TYPE_TEMP) ?
+                psContext->psShader->GetTempComponentCount(eDestType, pDest->ui32RegisterNumber) :
+                pDest->iNumComponents;
+			bformata(glsl, "%s %s = ", HLSLcc::GetConstructorForType(psContext, eDestType, numComponents), tempName);
+			TranslateOperand(glsl, pDest, TO_FLAG_NAME_ONLY);
+			bcatcstr(glsl, ";\n");
+		}
+		
 		for (destElem = 0; destElem < 4; ++destElem)
 		{
 			int numParenthesis = 0;
@@ -412,11 +452,32 @@ void ToGLSL::AddMOVCBinaryOp(const Operand *pDest, const Operand *src0, Operand 
 				}
 			}
 
-			TranslateOperand(src1, SVTTypeToFlag(eDestType), 1 << srcElem);
+			if (!dstIsSrc1)
+				TranslateOperand(src1, SVTTypeToFlag(eDestType), 1 << srcElem);
+			else
+			{
+				bformata(glsl, "%s", tempName);
+				TranslateOperandSwizzleWithMask(glsl, psContext, src1, 1 << srcElem, 0);
+			}
+			
 			bcatcstr(glsl, " : ");
-			TranslateOperand(src2, SVTTypeToFlag(eDestType), 1 << srcElem);
+			
+			if (!dstIsSrc2)
+				TranslateOperand(src2, SVTTypeToFlag(eDestType), 1 << srcElem);
+			else
+			{
+				bformata(glsl, "%s", tempName);
+				TranslateOperandSwizzleWithMask(glsl, psContext, src2, 1 << srcElem, 0);
+			}
 
 			AddAssignPrologue(numParenthesis);
+		}
+		
+		if (dstIsSrc1 || dstIsSrc2)
+		{
+			--psContext->indent;
+			psContext->AddIndentation();
+			bcatcstr(glsl, "}\n");
 		}
 	}
 }
@@ -435,6 +496,32 @@ void ToGLSL::CallBinaryOp(const char* name, Instruction* psInst,
 	uint32_t src0AccessCount = GetNumberBitsSet(src0AccessMask);
 	uint32_t src1AccessCount = GetNumberBitsSet(src1AccessMask);
 	int needsParenthesis = 0;
+
+	if (!HaveNativeBitwiseOps(psContext->psShader->eTargetLanguage))
+	{
+		const char *binaryOpWrap = NULL;
+
+		if (!strcmp("%", name))
+			binaryOpWrap = "op_modi";
+		else if (!strcmp("&", name))
+			binaryOpWrap = "op_and";
+		else if (!strcmp("|", name))
+			binaryOpWrap = "op_or";
+		else if (!strcmp("^", name))
+			binaryOpWrap = "op_xor";
+		else if (!strcmp(">>", name))
+			binaryOpWrap = "op_shr";
+		else if (!strcmp("<<", name))
+			binaryOpWrap = "op_shl";
+		// op_not handled separately at OPCODE_NOT
+
+		if (binaryOpWrap)
+		{
+			UseExtraFunctionDependency(binaryOpWrap);
+			CallHelper2Int(binaryOpWrap, psInst, 0, 1, 2, 1);
+			return;
+		}
+	}
 
 	if (src1SwizCount != src0SwizCount)
 	{
@@ -456,7 +543,7 @@ void ToGLSL::CallBinaryOp(const char* name, Instruction* psInst,
 	{
 		uint32_t i;
 		int firstPrinted = 0;
-		bcatcstr(glsl, GetConstructorForTypeGLSL(eDataType, dstSwizCount, false));
+		bcatcstr(glsl, GetConstructorForTypeGLSL(psContext, eDataType, dstSwizCount, false));
 		bcatcstr(glsl, "(");
 		for (i = 0; i < 4; i++)
 		{
@@ -682,159 +769,153 @@ void ToGLSL::CallHelper1Int(
 	AddAssignPrologue(numParenthesis);
 }
 
+// Texel fetches etc need a dummy sampler (because glslang wants one, for Reasons(tm)).
+// Any non-shadow sampler will do, so try to get one from sampler registers. If the current shader doesn't have any, declare a dummy one.
+std::string ToGLSL:: GetVulkanDummySamplerName()
+{
+	std::string dummySmpName = "hlslcc_dummyPointClamp";
+	if (!psContext->IsVulkan())
+		return "";
+
+	const ResourceBinding *pSmpInfo = NULL;
+	int smpIdx = 0;
+
+	while (psContext->psShader->sInfo.GetResourceFromBindingPoint(RGROUP_SAMPLER, smpIdx, &pSmpInfo) != 0)
+	{
+		if (pSmpInfo->m_SamplerMode != D3D10_SB_SAMPLER_MODE_COMPARISON)
+			return ResourceName(psContext, RGROUP_SAMPLER, smpIdx, 0);
+
+		smpIdx++;
+	}
+
+	if (!psContext->psShader->m_DummySamplerDeclared)
+	{
+		GLSLCrossDependencyData::VulkanResourceBinding binding = psContext->psDependencies->GetVulkanResourceBinding(dummySmpName);
+		bstring code = bfromcstr("");
+		bformata(code, "layout(set = %d, binding = %d) uniform mediump sampler %s;", binding.first, binding.second, dummySmpName.c_str());
+		DeclareExtraFunction(dummySmpName, code);
+		bdestroy(code);
+		psContext->psShader->m_DummySamplerDeclared = true;
+	}
+	return dummySmpName;
+}
+
 void ToGLSL::TranslateTexelFetch(
 	Instruction* psInst,
 	const ResourceBinding* psBinding,
 	bstring glsl)
 {
 	int numParenthesis = 0;
+
+	std::string vulkanSamplerName = GetVulkanDummySamplerName();
+
+	std::string texName = ResourceName(psContext, RGROUP_TEXTURE, psInst->asOperands[2].ui32RegisterNumber, 0);
+	const bool hasOffset = (psInst->bAddressOffset != 0);
+
+	// On Vulkan wrap the tex name with the sampler constructor
+	if (psContext->IsVulkan())
+	{
+		const RESOURCE_DIMENSION eResDim = psContext->psShader->aeResourceDims[psInst->asOperands[2].ui32RegisterNumber];
+		std::string smpType = GetSamplerType(psContext, eResDim, psInst->asOperands[2].ui32RegisterNumber);
+		std::ostringstream oss;
+		oss << smpType;
+		oss << "(" << texName << ", " << vulkanSamplerName << ")";
+		texName = oss.str();
+	}
+
 	psContext->AddIndentation();
 	AddAssignToDest(&psInst->asOperands[0], TypeFlagsToSVTType(ResourceReturnTypeToFlag(psBinding->ui32ReturnType)), 4, &numParenthesis);
-	bcatcstr(glsl, "texelFetch(");
 
-	// TODO Lod is being completely ignored!! Redo all of this.
+	if(hasOffset)
+		bcatcstr(glsl, "texelFetchOffset(");
+	else
+		bcatcstr(glsl, "texelFetch(");
+
 	switch (psBinding->eDimension)
 	{
-	case REFLECT_RESOURCE_DIMENSION_TEXTURE1D:
-	case REFLECT_RESOURCE_DIMENSION_BUFFER:
-	{
-											  TranslateOperand(&psInst->asOperands[2], TO_FLAG_NONE);
-											  bcatcstr(glsl, ", ");
-											  TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER, OPERAND_4_COMPONENT_MASK_X);
-											  if (psBinding->eDimension != REFLECT_RESOURCE_DIMENSION_BUFFER)
-												  bcatcstr(glsl, ", 0"); // Buffers don't have LOD
-											  bcatcstr(glsl, ")");
-											  break;
-	}
-	case REFLECT_RESOURCE_DIMENSION_TEXTURE2DARRAY:
-	case REFLECT_RESOURCE_DIMENSION_TEXTURE3D:
-	{
-												 TranslateOperand(&psInst->asOperands[2], TO_FLAG_NONE);
-												 bcatcstr(glsl, ", ");
-												 TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER | TO_AUTO_EXPAND_TO_VEC3, 7 /* .xyz */);
-												 bcatcstr(glsl, ", 0)");
-												 break;
-	}
-	case REFLECT_RESOURCE_DIMENSION_TEXTURE2D:
-	case REFLECT_RESOURCE_DIMENSION_TEXTURE1DARRAY:
-	{
-													  TranslateOperand(&psInst->asOperands[2], TO_FLAG_NONE);
-													  bcatcstr(glsl, ", ");
-													  TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER | TO_AUTO_EXPAND_TO_VEC2, 3 /* .xy */);
-													  bcatcstr(glsl, ", 0)");
-													  break;
-	}
-	case REFLECT_RESOURCE_DIMENSION_TEXTURE2DMS: // TODO does this make any sense at all?
-	{
-													 ASSERT(psInst->eOpcode == OPCODE_LD_MS);
-													 TranslateOperand(&psInst->asOperands[2], TO_FLAG_NONE);
-													 bcatcstr(glsl, ", ");
-													 TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER | TO_AUTO_EXPAND_TO_VEC2, 3 /* .xy */);
-													 bcatcstr(glsl, ", ");
-													 TranslateOperand(&psInst->asOperands[3], TO_FLAG_INTEGER, OPERAND_4_COMPONENT_MASK_X);
-													 bcatcstr(glsl, ")");
-													 break;
-	}
-	case REFLECT_RESOURCE_DIMENSION_TEXTURE2DMSARRAY:
-	{
-														ASSERT(psInst->eOpcode == OPCODE_LD_MS);
-														TranslateOperand(&psInst->asOperands[2], TO_FLAG_NONE);
-														bcatcstr(glsl, ", ");
-														TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER | TO_AUTO_EXPAND_TO_VEC3, 7 /* .xyz */);
-														bcatcstr(glsl, ", ");
-														TranslateOperand(&psInst->asOperands[3], TO_FLAG_INTEGER, OPERAND_4_COMPONENT_MASK_X);
-														bcatcstr(glsl, ")");
-														break;
-	}
-	case REFLECT_RESOURCE_DIMENSION_TEXTURECUBE:
-	case REFLECT_RESOURCE_DIMENSION_TEXTURECUBEARRAY:
-	case REFLECT_RESOURCE_DIMENSION_BUFFEREX:
-	default:
-	{
-			   ASSERT(0);
-			   break;
-	}
+		case REFLECT_RESOURCE_DIMENSION_TEXTURE1D:
+		case REFLECT_RESOURCE_DIMENSION_BUFFER:
+		{
+			bcatcstr(glsl, texName.c_str());
+			bcatcstr(glsl, ", ");
+			TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER, OPERAND_4_COMPONENT_MASK_X);
+			// Buffers don't have LOD or offset
+			if (psBinding->eDimension != REFLECT_RESOURCE_DIMENSION_BUFFER)
+			{
+				bcatcstr(glsl, ", ");
+				TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER, OPERAND_4_COMPONENT_MASK_A);
+				if (hasOffset)
+					bformata(glsl, ", %d", psInst->iUAddrOffset);
+			}
+			bcatcstr(glsl, ")");
+			break;
+		}
+		case REFLECT_RESOURCE_DIMENSION_TEXTURE2DARRAY:
+		case REFLECT_RESOURCE_DIMENSION_TEXTURE3D:
+		{
+			bcatcstr(glsl, texName.c_str());
+			bcatcstr(glsl, ", ");
+			TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER | TO_AUTO_EXPAND_TO_VEC3, 7 /* .xyz */);
+			bcatcstr(glsl, ", ");
+			TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER, OPERAND_4_COMPONENT_MASK_A);
+			if (hasOffset && psBinding->eDimension == REFLECT_RESOURCE_DIMENSION_TEXTURE3D)
+				bformata(glsl, ", ivec3(%d, %d, %d)", psInst->iUAddrOffset, psInst->iVAddrOffset, psInst->iWAddrOffset);
+			if (hasOffset && psBinding->eDimension == REFLECT_RESOURCE_DIMENSION_TEXTURE2DARRAY)
+				bformata(glsl, ", ivec3(%d, %d)", psInst->iUAddrOffset, psInst->iVAddrOffset);
+			bcatcstr(glsl, ")");
+			break;
+		}
+		case REFLECT_RESOURCE_DIMENSION_TEXTURE2D:
+		case REFLECT_RESOURCE_DIMENSION_TEXTURE1DARRAY:
+		{
+			bcatcstr(glsl, texName.c_str());
+			bcatcstr(glsl, ", ");
+			TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER | TO_AUTO_EXPAND_TO_VEC2, 3 /* .xy */);
+			bcatcstr(glsl, ", ");
+			TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER, OPERAND_4_COMPONENT_MASK_A);
+			if (hasOffset && psBinding->eDimension == REFLECT_RESOURCE_DIMENSION_TEXTURE1DARRAY)
+				bformata(glsl, ", %d", psInst->iUAddrOffset);
+			if (hasOffset && psBinding->eDimension == REFLECT_RESOURCE_DIMENSION_TEXTURE2D)
+				bformata(glsl, ", ivec3(%d, %d)", psInst->iUAddrOffset, psInst->iVAddrOffset);
+			bcatcstr(glsl, ")");
+			break;
+		}
+		case REFLECT_RESOURCE_DIMENSION_TEXTURE2DMS:
+		{
+			ASSERT(psInst->eOpcode == OPCODE_LD_MS);
+			bcatcstr(glsl, texName.c_str());
+			bcatcstr(glsl, ", ");
+			TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER | TO_AUTO_EXPAND_TO_VEC2, 3 /* .xy */);
+			bcatcstr(glsl, ", ");
+			TranslateOperand(&psInst->asOperands[3], TO_FLAG_INTEGER, OPERAND_4_COMPONENT_MASK_X);
+			bcatcstr(glsl, ")");
+			break;
+		}
+		case REFLECT_RESOURCE_DIMENSION_TEXTURE2DMSARRAY:
+		{
+			ASSERT(psInst->eOpcode == OPCODE_LD_MS);
+			bcatcstr(glsl, texName.c_str());
+			bcatcstr(glsl, ", ");
+			TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER | TO_AUTO_EXPAND_TO_VEC3, 7 /* .xyz */);
+			bcatcstr(glsl, ", ");
+			TranslateOperand(&psInst->asOperands[3], TO_FLAG_INTEGER, OPERAND_4_COMPONENT_MASK_X);
+			bcatcstr(glsl, ")");
+			break;
+		}
+		case REFLECT_RESOURCE_DIMENSION_TEXTURECUBE:
+		case REFLECT_RESOURCE_DIMENSION_TEXTURECUBEARRAY:
+		case REFLECT_RESOURCE_DIMENSION_BUFFEREX:
+		default:
+		{
+			// Not possible in either HLSL or GLSL
+			ASSERT(0);
+			break;
+		}
 	}
 
 	TranslateOperandSwizzleWithMask(psContext, &psInst->asOperands[2], psInst->asOperands[0].GetAccessMask(), 0);
 	AddAssignPrologue(numParenthesis);
 }
-
-void ToGLSL::TranslateTexelFetchOffset(
-	Instruction* psInst,
-	const ResourceBinding* psBinding,
-	bstring glsl)
-{
-	int numParenthesis = 0;
-	psContext->AddIndentation();
-	AddAssignToDest(&psInst->asOperands[0], TypeFlagsToSVTType(ResourceReturnTypeToFlag(psBinding->ui32ReturnType)), 4, &numParenthesis);
-
-	bcatcstr(glsl, "texelFetchOffset(");
-
-	switch (psBinding->eDimension)
-	{
-	case REFLECT_RESOURCE_DIMENSION_TEXTURE1D:
-	{
-												 TranslateOperand(&psInst->asOperands[2], TO_FLAG_NONE);
-												 bcatcstr(glsl, ", ");
-												 TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER, OPERAND_4_COMPONENT_MASK_X);
-												 bformata(glsl, ", 0, %d)", psInst->iUAddrOffset);
-												 break;
-	}
-	case REFLECT_RESOURCE_DIMENSION_TEXTURE2DARRAY:
-	{
-													  TranslateOperand(&psInst->asOperands[2], TO_FLAG_NONE);
-													  bcatcstr(glsl, ", ");
-													  TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER | TO_AUTO_EXPAND_TO_VEC3, 7 /* .xyz */);
-													  bformata(glsl, ", 0, ivec2(%d, %d))",
-														  psInst->iUAddrOffset,
-														  psInst->iVAddrOffset);
-													  break;
-	}
-	case REFLECT_RESOURCE_DIMENSION_TEXTURE3D:
-	{
-												 TranslateOperand(&psInst->asOperands[2], TO_FLAG_NONE);
-												 bcatcstr(glsl, ", ");
-												 TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER | TO_AUTO_EXPAND_TO_VEC3, 7 /* .xyz */);
-												 bformata(glsl, ", 0, ivec3(%d, %d, %d))",
-													 psInst->iUAddrOffset,
-													 psInst->iVAddrOffset,
-													 psInst->iWAddrOffset);
-												 break;
-	}
-	case REFLECT_RESOURCE_DIMENSION_TEXTURE2D:
-	{
-												 TranslateOperand(&psInst->asOperands[2], TO_FLAG_NONE);
-												 bcatcstr(glsl, ", ");
-												 TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER | TO_AUTO_EXPAND_TO_VEC2, 3 /* .xy */);
-												 bformata(glsl, ", 0, ivec2(%d, %d))", psInst->iUAddrOffset, psInst->iVAddrOffset);
-												 break;
-	}
-	case REFLECT_RESOURCE_DIMENSION_TEXTURE1DARRAY:
-	{
-													  TranslateOperand(&psInst->asOperands[2], TO_FLAG_NONE);
-													  bcatcstr(glsl, ", ");
-													  TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER | TO_AUTO_EXPAND_TO_VEC2, 3 /* .xy */);
-													  bformata(glsl, ", 0, int(%d))", psInst->iUAddrOffset);
-													  break;
-	}
-	case REFLECT_RESOURCE_DIMENSION_BUFFER:
-	case REFLECT_RESOURCE_DIMENSION_TEXTURE2DMS:
-	case REFLECT_RESOURCE_DIMENSION_TEXTURE2DMSARRAY:
-	case REFLECT_RESOURCE_DIMENSION_TEXTURECUBE:
-	case REFLECT_RESOURCE_DIMENSION_TEXTURECUBEARRAY:
-	case REFLECT_RESOURCE_DIMENSION_BUFFEREX:
-	default:
-	{
-			   ASSERT(0);
-			   break;
-	}
-	}
-
-	TranslateOperandSwizzleWithMask(psContext, &psInst->asOperands[2], psInst->asOperands[0].GetAccessMask(), 0);
-	AddAssignPrologue(numParenthesis);
-}
-
 
 //Makes sure the texture coordinate swizzle is appropriate for the texture type.
 //i.e. vecX for X-dimension texture.
@@ -895,6 +976,21 @@ void ToGLSL::GetResInfoData(Instruction* psInst, int index, int destElem)
 	bool isUAV = (psInst->asOperands[2].eType == OPERAND_TYPE_UNORDERED_ACCESS_VIEW);
 	bool isMS = psInst->eResDim == RESOURCE_DIMENSION_TEXTURE2DMS || psInst->eResDim == RESOURCE_DIMENSION_TEXTURE2DMSARRAY;
 
+	std::string texName = ResourceName(psContext, isUAV ? RGROUP_UAV : RGROUP_TEXTURE, psInst->asOperands[2].ui32RegisterNumber, 0);
+
+	// On Vulkan wrap the tex name with the sampler constructor
+	if (psContext->IsVulkan() && !isUAV)
+	{
+		std::string vulkanSamplerName = GetVulkanDummySamplerName();
+
+		const RESOURCE_DIMENSION eResDim = psContext->psShader->aeResourceDims[psInst->asOperands[2].ui32RegisterNumber];
+		std::string smpType = GetSamplerType(psContext, eResDim, psInst->asOperands[2].ui32RegisterNumber);
+		std::ostringstream oss;
+		oss << smpType;
+		oss << "(" << texName << ", " << vulkanSamplerName << ")";
+		texName = oss.str();
+	}
+
 	psContext->AddIndentation();
 	AddOpAssignToDestWithMask(&psInst->asOperands[0], eResInfoReturnType == RESINFO_INSTRUCTION_RETURN_UINT ? SVT_UINT : SVT_FLOAT, 1, "=", &numParenthesis, 1 << destElem);
 
@@ -905,12 +1001,20 @@ void ToGLSL::GetResInfoData(Instruction* psInst, int index, int destElem)
 		bcatcstr(glsl, "(");
 		if (dim < (index + 1))
 		{
-			bcatcstr(glsl, eResInfoReturnType == RESINFO_INSTRUCTION_RETURN_UINT ? "uint(0u)" : "0.0");
+			if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
+				bcatcstr(glsl, eResInfoReturnType == RESINFO_INSTRUCTION_RETURN_UINT ? "uint(0u)" : "0.0");
+			else
+				bcatcstr(glsl, eResInfoReturnType == RESINFO_INSTRUCTION_RETURN_UINT ? "int(0)" : "0.0");
 		}
 		else
 		{
 			if (eResInfoReturnType == RESINFO_INSTRUCTION_RETURN_UINT)
-				bformata(glsl, "uvec%d(", dim);
+			{
+				if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
+					bformata(glsl, "uvec%d(", dim);
+				else
+					bformata(glsl, "ivec%d(", dim);
+			}
 			else if (eResInfoReturnType == RESINFO_INSTRUCTION_RETURN_RCPFLOAT)
 				bformata(glsl, "vec%d(1.0) / vec%d(", dim, dim);
 			else
@@ -921,7 +1025,7 @@ void ToGLSL::GetResInfoData(Instruction* psInst, int index, int destElem)
 			else
 				bcatcstr(glsl, "textureSize(");
 
-			TranslateOperand(&psInst->asOperands[2], TO_FLAG_NONE);
+			bcatcstr(glsl, texName.c_str());
 
 			if (!isUAV && !isMS)
 			{
@@ -950,11 +1054,16 @@ void ToGLSL::GetResInfoData(Instruction* psInst, int index, int destElem)
 	{
 		ASSERT(!isUAV);
 		if (eResInfoReturnType == RESINFO_INSTRUCTION_RETURN_UINT)
-			bcatcstr(glsl, "uint(");
+		{
+			if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
+				bcatcstr(glsl, "uint(");
+			else
+				bcatcstr(glsl, "int(");
+		}
 		else
 			bcatcstr(glsl, "float(");
 		bcatcstr(glsl, "textureQueryLevels(");
-		TranslateOperand(&psInst->asOperands[2], TO_FLAG_NONE);
+		bcatcstr(glsl, texName.c_str());
 		bcatcstr(glsl, "))");
 	}
 	AddAssignPrologue(numParenthesis);
@@ -982,6 +1091,7 @@ void ToGLSL::TranslateTextureSample(Instruction* psInst,
 	const char* offset = "";
 	const char* depthCmpCoordType = "";
 	const char* gradSwizzle = "";
+	const char* ext = "";
 
 	uint32_t ui32NumOffsets = 0;
 
@@ -1028,7 +1138,7 @@ void ToGLSL::TranslateTextureSample(Instruction* psInst,
 	}
 	case RESOURCE_DIMENSION_TEXTURECUBE:
 	{
-		depthCmpCoordType = "vec3";
+		depthCmpCoordType = "vec4";
 		gradSwizzle = ".xyz";
 		ui32NumOffsets = 3;
 		if (!iHaveOverloadedTexFuncs)
@@ -1106,20 +1216,50 @@ void ToGLSL::TranslateTextureSample(Instruction* psInst,
 	psContext->AddIndentation();
 	AddAssignToDest(psDest, dataType, psSrcTex->GetNumSwizzleElements(), &numParenthesis);
 
-	// Func name depending on the flags
-	if (ui32Flags & (TEXSMP_FLAG_LOD | TEXSMP_FLAG_FIRSTLOD))
-		bformata(glsl, "%sLod%s(", funcName, offset);
-	else if (ui32Flags & TEXSMP_FLAG_GRAD)
-		bformata(glsl, "%sGrad%s(", funcName, offset);
-	else
-		bformata(glsl, "%s%s(", funcName, offset);
+	// GLSL doesn't have textureLod() for 2d shadow samplers, we'll have to use grad instead. In that case assume LOD 0.
+	const bool needsLodWorkaround = (eResDim == RESOURCE_DIMENSION_TEXTURE2DARRAY) && (ui32Flags & TEXSMP_FLAG_DEPTHCOMPARE); 
+	const bool needsLodWorkaroundES2 = (psContext->psShader->eTargetLanguage == LANG_ES_100 && psContext->psShader->eShaderType == PIXEL_SHADER && (ui32Flags & TEXSMP_FLAG_DEPTHCOMPARE));
 
-	// Sampler name
-	if (!useCombinedTextureSamplers)
-		ResourceName(glsl, psContext, RGROUP_TEXTURE, psSrcTex->ui32RegisterNumber, ui32Flags & TEXSMP_FLAG_DEPTHCOMPARE);
+	if (needsLodWorkaround)
+	{
+		bformata(glsl, "%sGrad%s(", funcName, offset);
+	}
 	else
-		bcatcstr(glsl, TextureSamplerName(&psContext->psShader->sInfo, psSrcTex->ui32RegisterNumber, psSrcSamp->ui32RegisterNumber, ui32Flags & TEXSMP_FLAG_DEPTHCOMPARE).c_str());
-	
+	{
+		if (psContext->psShader->eTargetLanguage == LANG_ES_100 &&
+			psContext->psShader->eShaderType == PIXEL_SHADER &&
+			ui32Flags & (TEXSMP_FLAG_LOD | TEXSMP_FLAG_FIRSTLOD | TEXSMP_FLAG_GRAD))
+			ext = "EXT";
+
+		if (ui32Flags & (TEXSMP_FLAG_LOD | TEXSMP_FLAG_FIRSTLOD) && !needsLodWorkaroundES2)
+			bformata(glsl, "%sLod%s%s(", funcName, ext, offset);
+		else if (ui32Flags & TEXSMP_FLAG_GRAD)
+			bformata(glsl, "%sGrad%s%s(", funcName, ext, offset);
+		else
+			bformata(glsl, "%s%s%s(", funcName, ext, offset);
+	}
+
+	if (psContext->IsVulkan())
+	{
+		// Build the sampler name here
+		std::string samplerType = GetSamplerType(psContext, eResDim, psSrcTex->ui32RegisterNumber);
+		const ResourceBinding *pSmpRes = NULL;
+		psContext->psShader->sInfo.GetResourceFromBindingPoint(RGROUP_SAMPLER, psSrcSamp->ui32RegisterNumber, &pSmpRes);
+
+		if (pSmpRes->m_SamplerMode == D3D10_SB_SAMPLER_MODE_COMPARISON)
+			samplerType.append("Shadow");
+		std::string texName = ResourceName(psContext, RGROUP_TEXTURE, psSrcTex->ui32RegisterNumber, 0);
+		std::string smpName = ResourceName(psContext, RGROUP_SAMPLER, psSrcSamp->ui32RegisterNumber, 0);
+		bformata(glsl, "%s(%s, %s)", samplerType.c_str(), texName.c_str(), smpName.c_str());
+	}
+	else
+	{
+		// Sampler name
+		if (!useCombinedTextureSamplers)
+			ResourceName(glsl, psContext, RGROUP_TEXTURE, psSrcTex->ui32RegisterNumber, ui32Flags & TEXSMP_FLAG_DEPTHCOMPARE);
+		else
+			bcatcstr(glsl, TextureSamplerName(&psContext->psShader->sInfo, psSrcTex->ui32RegisterNumber, psSrcSamp->ui32RegisterNumber, ui32Flags & TEXSMP_FLAG_DEPTHCOMPARE).c_str());
+	}
 	bcatcstr(glsl, ", ");
 
 	// Texture coordinates, either from previously constructed temp
@@ -1142,18 +1282,26 @@ void ToGLSL::TranslateTextureSample(Instruction* psInst,
 	}
 
 	// Add LOD/grad parameters based on the flags
-	if (ui32Flags & TEXSMP_FLAG_LOD)
+	if (needsLodWorkaround)
 	{
-		bcatcstr(glsl, ", ");
-		TranslateOperand(psSrcLOD, TO_AUTO_BITCAST_TO_FLOAT);
-		if (psContext->psShader->ui32MajorVersion < 4)
+		bcatcstr(glsl, ", vec2(0.0, 0.0), vec2(0.0, 0.0)");
+	}
+	else if (ui32Flags & TEXSMP_FLAG_LOD)
+	{
+		if (!needsLodWorkaroundES2)
 		{
-			bcatcstr(glsl, ".w");
+			bcatcstr(glsl, ", ");
+			TranslateOperand(psSrcLOD, TO_AUTO_BITCAST_TO_FLOAT);
+			if (psContext->psShader->ui32MajorVersion < 4)
+			{
+				bcatcstr(glsl, ".w");
+			}
 		}
 	}
 	else if (ui32Flags & TEXSMP_FLAG_FIRSTLOD)
 	{
-		bcatcstr(glsl, ", 0.0");
+		if (!needsLodWorkaroundES2)
+			bcatcstr(glsl, ", 0.0");
 	}
 	else if (ui32Flags & TEXSMP_FLAG_GRAD)
 	{
@@ -1255,14 +1403,28 @@ void ToGLSL::TranslateDynamicComponentSelection(const ShaderVarType* psVarType, 
 	if (offset > 0)
 		bcatcstr(glsl, "(");
 
-	// The var containing byte address to the requested element
-	TranslateOperand(psByteAddr, TO_FLAG_UNSIGNED_INTEGER, mask);
+	if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
+	{
+		// The var containing byte address to the requested element
+		TranslateOperand(psByteAddr, TO_FLAG_UNSIGNED_INTEGER, mask);
 
-	if (offset > 0)// If the vector is part of a struct, there is an extra offset in our byte address
-		bformata(glsl, " - %du)", offset); // Subtract that first
+		if (offset > 0)// If the vector is part of a struct, there is an extra offset in our byte address
+			bformata(glsl, " - %du)", offset); // Subtract that first
 
-	bcatcstr(glsl, " >> 0x2u"); // Convert byte offset to index: div by four
-	bcatcstr(glsl, "]");
+		bcatcstr(glsl, " >> 0x2u"); // Convert byte offset to index: div by four
+		bcatcstr(glsl, "]");
+	}
+	else
+	{
+		// The var containing byte address to the requested element
+		TranslateOperand(psByteAddr, TO_FLAG_INTEGER, mask);
+
+		if (offset > 0)// If the vector is part of a struct, there is an extra offset in our byte address
+			bformata(glsl, " - %d)", offset); // Subtract that first
+
+		bcatcstr(glsl, " >> 0x2"); // Convert byte offset to index: div by four
+		bcatcstr(glsl, "]");
+	}
 }
 
 void ToGLSL::TranslateShaderStorageStore(Instruction* psInst)
@@ -1296,7 +1458,7 @@ void ToGLSL::TranslateShaderStorageStore(Instruction* psInst)
 
 	uint32_t dstOffFlag = TO_FLAG_UNSIGNED_INTEGER;
 	SHADER_VARIABLE_TYPE dstOffType = psDestByteOff->GetDataType(psContext);
-	if (dstOffType == SVT_INT || dstOffType == SVT_INT16 || dstOffType == SVT_INT12)
+	if (!HaveUnsignedTypes(psContext->psShader->eTargetLanguage) || dstOffType == SVT_INT || dstOffType == SVT_INT16 || dstOffType == SVT_INT12)
 		dstOffFlag = TO_FLAG_INTEGER;
 
 	for (component = 0; component < 4; component++)
@@ -1380,14 +1542,14 @@ void ToGLSL::TranslateShaderStorageLoad(Instruction* psInst)
 	SHADER_VARIABLE_TYPE destDataType = psDest->GetDataType(psContext);
 	uint32_t srcOffFlag = TO_FLAG_UNSIGNED_INTEGER;
 	SHADER_VARIABLE_TYPE srcOffType = psSrcByteOff->GetDataType(psContext);
-	if (srcOffType == SVT_INT || srcOffType == SVT_INT16 || srcOffType == SVT_INT12)
+	if (!HaveUnsignedTypes(psContext->psShader->eTargetLanguage) || srcOffType == SVT_INT || srcOffType == SVT_INT16 || srcOffType == SVT_INT12)
 		srcOffFlag = TO_FLAG_INTEGER;
 
 	psContext->AddIndentation();
 	AddAssignToDest(psDest, destDataType, destCount, &numParenthesis); //TODO check this out?
 	if (destCount > 1)
 	{
-		bformata(glsl, "%s(", GetConstructorForTypeGLSL(destDataType, destCount, false));
+		bformata(glsl, "%s(", GetConstructorForTypeGLSL(psContext, destDataType, destCount, false));
 		numParenthesis++;
 	}
 	for (component = 0; component < 4; component++)
@@ -1404,7 +1566,10 @@ void ToGLSL::TranslateShaderStorageLoad(Instruction* psInst)
 		// always uint array atm
 		if (destDataType == SVT_FLOAT)
 		{
-			bcatcstr(glsl, "uintBitsToFloat(");
+			if (HaveBitEncodingOps(psContext->psShader->eTargetLanguage))
+				bcatcstr(glsl, "uintBitsToFloat(");
+			else
+				bcatcstr(glsl, "float(");
 			addedBitcast = 1;
 		}
 		else if (destDataType == SVT_INT || destDataType == SVT_INT16 || destDataType == SVT_INT12)
@@ -1742,7 +1907,7 @@ void ToGLSL::TranslateAtomicMemOp(Instruction* psInst)
 		}
 	}
 
-	if (isUint)
+	if (isUint && HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
 		ui32DataTypeFlag = TO_FLAG_UNSIGNED_INTEGER | TO_AUTO_BITCAST_TO_UINT;
 	else
 		ui32DataTypeFlag = TO_FLAG_INTEGER | TO_AUTO_BITCAST_TO_INT;
@@ -1777,7 +1942,7 @@ void ToGLSL::TranslateAtomicMemOp(Instruction* psInst)
 
 		uint32_t destAddrFlag = TO_FLAG_UNSIGNED_INTEGER;
 		SHADER_VARIABLE_TYPE destAddrType = destAddr->GetDataType(psContext);
-		if (destAddrType == SVT_INT || destAddrType == SVT_INT16 || destAddrType == SVT_INT12)
+		if (!HaveUnsignedTypes(psContext->psShader->eTargetLanguage) || destAddrType == SVT_INT || destAddrType == SVT_INT16 || destAddrType == SVT_INT12)
 			destAddrFlag = TO_FLAG_INTEGER;
 
 		bcatcstr(glsl, "[");
@@ -1863,7 +2028,7 @@ void ToGLSL::TranslateConditional(
 	{
 		uint32_t oFlag = TO_FLAG_UNSIGNED_INTEGER;
 		bool isInt = false;
-		if (argType == SVT_INT || argType == SVT_INT16 || argType == SVT_INT12)
+		if (!HaveUnsignedTypes(psContext->psShader->eTargetLanguage) || argType == SVT_INT || argType == SVT_INT16 || argType == SVT_INT12)
 		{
 			isInt = true;
 			oFlag = TO_FLAG_INTEGER;
@@ -1979,7 +2144,7 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 						psContext->AddIndentation();
 
 						AddAssignToDest(&psInst->asOperands[0], castType, srcCount, &numParenthesis);
-						bcatcstr(glsl, GetConstructorForTypeGLSL(castType, dstCount, false));
+						bcatcstr(glsl, GetConstructorForTypeGLSL(psContext, castType, dstCount, false));
 						bcatcstr(glsl, "("); // 1
 						TranslateOperand(&psInst->asOperands[1], TO_AUTO_BITCAST_TO_FLOAT, psInst->asOperands[0].GetAccessMask());
 						bcatcstr(glsl, ")"); // 1
@@ -2037,7 +2202,7 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 
 						 psContext->AddIndentation();
 						 AddAssignToDest(&psInst->asOperands[0], castType, srcCount, &numParenthesis);
-						 bcatcstr(glsl, GetConstructorForTypeGLSL(castType, dstCount, false));
+						 bcatcstr(glsl, GetConstructorForTypeGLSL(psContext, castType, dstCount, false));
 						 bcatcstr(glsl, "("); // 1
 						 TranslateOperand(&psInst->asOperands[1], psInst->eOpcode == OPCODE_UTOF ? TO_AUTO_BITCAST_TO_UINT : TO_AUTO_BITCAST_TO_INT, psInst->asOperands[0].GetAccessMask());
 						 bcatcstr(glsl, ")"); // 1
@@ -2222,7 +2387,7 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 								TranslateOperand(&psInst->asOperands[otherOp], ui32Flags, destMask);
 								bcatcstr(glsl, " : ");
 
-								bcatcstr(glsl, GetConstructorForTypeGLSL(eDataType, dstSwizCount, false));
+								bcatcstr(glsl, GetConstructorForTypeGLSL(psContext, eDataType, dstSwizCount, false));
 								bcatcstr(glsl, "(");
 								for (i = 0; i < dstSwizCount; i++)
 								{
@@ -2248,7 +2413,7 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 								// We can use mix()
 								AddAssignToDest(&psInst->asOperands[0], eDataType, dstSwizCount, &needsParenthesis);
 								bcatcstr(glsl, "mix(");
-								bcatcstr(glsl, GetConstructorForTypeGLSL(eDataType, dstSwizCount, false));
+								bcatcstr(glsl, GetConstructorForTypeGLSL(psContext, eDataType, dstSwizCount, false));
 								bcatcstr(glsl, "(");
 								for (i = 0; i < dstSwizCount; i++)
 								{
@@ -2270,7 +2435,7 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 								bcatcstr(glsl, "), ");
 								TranslateOperand(&psInst->asOperands[otherOp], ui32Flags, destMask);
 								bcatcstr(glsl, ", ");
-								bcatcstr(glsl, GetConstructorForTypeGLSL(eDataType, dstSwizCount, false));
+								bcatcstr(glsl, GetConstructorForTypeGLSL(psContext, eDataType, dstSwizCount, false));
 								bcatcstr(glsl, "(");
 								TranslateOperand(&psInst->asOperands[boolOp], TO_FLAG_BOOL, destMask);
 								bcatcstr(glsl, ")");
@@ -2280,10 +2445,13 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 							{
 								AddAssignToDest(&psInst->asOperands[0], SVT_UINT, dstSwizCount, &needsParenthesis);
 								bcatcstr(glsl, "(");
-								bcatcstr(glsl, GetConstructorForTypeGLSL(SVT_UINT, dstSwizCount, false));
+								bcatcstr(glsl, GetConstructorForTypeGLSL(psContext, SVT_UINT, dstSwizCount, false));
 								bcatcstr(glsl, "(");
 								TranslateOperand(&psInst->asOperands[boolOp], TO_FLAG_BOOL, destMask);
-								bcatcstr(glsl, ") * 0xffffffffu) & ");
+								if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
+									bcatcstr(glsl, ") * 0xffffffffu) & ");
+								else
+									bcatcstr(glsl, ") * 0xffffffff) & ");
 								TranslateOperand(&psInst->asOperands[otherOp], TO_FLAG_UNSIGNED_INTEGER, destMask);
 							}
 
@@ -2601,6 +2769,9 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 						   psContext->AddIndentation();
 						   bcatcstr(glsl, "//ROUND_Z\n");
 #endif
+							if (psContext->psShader->eTargetLanguage == LANG_ES_100)
+								UseExtraFunctionDependency("trunc");
+
 						   CallHelper1("trunc", psInst, 0, 1, 1);
 						   break;
 	}
@@ -2610,6 +2781,10 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 							psContext->AddIndentation();
 							bcatcstr(glsl, "//ROUND_NE\n");
 #endif
+
+							if (psContext->psShader->eTargetLanguage == LANG_ES_100)
+								UseExtraFunctionDependency("roundEven");
+
 							CallHelper1("roundEven", psInst, 0, 1, 1);
 							break;
 	}
@@ -2628,7 +2803,10 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 						psContext->AddIndentation();
 						bcatcstr(glsl, "//IMAX\n");
 #endif
-						CallHelper2Int("max", psInst, 0, 1, 2, 1);
+						if (psContext->psShader->eTargetLanguage == LANG_ES_100)
+							CallHelper2("max", psInst, 0, 1, 2, 1);
+						else
+							CallHelper2Int("max", psInst, 0, 1, 2, 1);
 						break;
 	}
 	case OPCODE_UMAX:
@@ -2637,7 +2815,10 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 						psContext->AddIndentation();
 						bcatcstr(glsl, "//UMAX\n");
 #endif
-						CallHelper2UInt("max", psInst, 0, 1, 2, 1);
+						if (psContext->psShader->eTargetLanguage == LANG_ES_100)
+							CallHelper2("max", psInst, 0, 1, 2, 1);
+						else
+							CallHelper2UInt("max", psInst, 0, 1, 2, 1);
 						break;
 	}
 	case OPCODE_MAX:
@@ -2655,7 +2836,10 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 						psContext->AddIndentation();
 						bcatcstr(glsl, "//IMIN\n");
 #endif
-						CallHelper2Int("min", psInst, 0, 1, 2, 1);
+						if (psContext->psShader->eTargetLanguage == LANG_ES_100)
+							CallHelper2("min", psInst, 0, 1, 2, 1);
+						else
+							CallHelper2Int("min", psInst, 0, 1, 2, 1);
 						break;
 	}
 	case OPCODE_UMIN:
@@ -2664,7 +2848,10 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 						psContext->AddIndentation();
 						bcatcstr(glsl, "//UMIN\n");
 #endif
-						CallHelper2UInt("min", psInst, 0, 1, 2, 1);
+						if (psContext->psShader->eTargetLanguage == LANG_ES_100)
+							CallHelper2("min", psInst, 0, 1, 2, 1);
+						else
+							CallHelper2UInt("min", psInst, 0, 1, 2, 1);
 						break;
 	}
 	case OPCODE_MIN:
@@ -2912,12 +3099,12 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 	}
 	case OPCODE_BFI:
 	{
+                       uint32_t destMask = psInst->asOperands[0].GetAccessMask();
 					   uint32_t numelements_width = psInst->asOperands[1].GetNumSwizzleElements();
 					   uint32_t numelements_offset = psInst->asOperands[2].GetNumSwizzleElements();
 					   uint32_t numelements_dest = psInst->asOperands[0].GetNumSwizzleElements();
 					   uint32_t numoverall_elements = std::min(std::min(numelements_width, numelements_offset), numelements_dest);
-					   uint32_t i, j;
-					   static const char* bfi_elementidx[] = { "x", "y", "z", "w" };
+					   uint32_t i, j, k;
 #ifdef _DEBUG
 					   psContext->AddIndentation();
 					   bcatcstr(glsl, "//BFI\n");
@@ -2931,35 +3118,27 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 					   else
 						   bformata(glsl, "ivec%d(", numoverall_elements);
 
-					   for (i = 0; i < numoverall_elements; ++i)
+                       k = 0;
+					   for (i = 0; i < 4; ++i)
 					   {
+                           if ((destMask & (1 << i)) == 0)
+                               continue;
+
+                           k++;
 						   bcatcstr(glsl, "bitfieldInsert(");
 
 						   for (j = 4; j >= 1; --j)
 						   {
-							   uint32_t opSwizzleCount = psInst->asOperands[j].GetNumSwizzleElements();
-
-							   if (opSwizzleCount != 1)
-								   bcatcstr(glsl, " (");
-							   TranslateOperand(&psInst->asOperands[j], TO_FLAG_INTEGER);
-							   if (opSwizzleCount != 1)
-								   bformata(glsl, " ).%s", bfi_elementidx[i]);
+							   TranslateOperand(&psInst->asOperands[j], TO_FLAG_INTEGER, 1 << i);
 							   if (j != 1)
 								   bcatcstr(glsl, ",");
 						   }
 
 						   bcatcstr(glsl, ") ");
-						   if (i + 1 != numoverall_elements)
+						   if (k != numoverall_elements)
 							   bcatcstr(glsl, ", ");
 					   }
 					   bcatcstr(glsl, ")");
-
-					   if (numoverall_elements > 1)
-					   {
-						   bcatcstr(glsl, ".");
-						   for (i = 0; i < numoverall_elements; ++i)
-							   bformata(glsl, "%s", bfi_elementidx[i]);
-					   }
 					   AddAssignPrologue(numParenthesis);
 					   break;
 	}
@@ -3154,6 +3333,7 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 						else if (psInst->m_LoopInductors[1] != 0)
 						{
 							// Can emit as for
+							uint32_t typeFlags = TO_FLAG_INTEGER;
 							bcatcstr(glsl, "for(");
 							if (psInst->m_LoopInductors[0] != 0)
 							{
@@ -3167,6 +3347,7 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 										break;
 									case SVT_UINT:
 										bcatcstr(glsl, "uint ");
+										typeFlags = TO_FLAG_UNSIGNED_INTEGER;
 										break;
 									default:
 										ASSERT(0);
@@ -3189,7 +3370,6 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 							if (psInst->m_LoopInductors[1]->asOperands[1].eType == OPERAND_TYPE_IMMEDIATE32)
 								negateOrder = true;
 
-							uint32_t typeFlags = TO_FLAG_INTEGER;
 							const char *cmpOp = "";
 							switch (psInst->m_LoopInductors[1]->eOpcode)
 							{
@@ -3256,7 +3436,20 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 						}
 						else
 						{
-							bcatcstr(glsl, "while(true){\n");
+							if (psContext->psShader->eTargetLanguage == LANG_ES_100)
+							{
+								bstring name;
+								name = bformat(HLSLCC_TEMP_PREFIX "i_while_true_%d", m_NumDeclaredWhileTrueLoops++);
+
+								// Workaround limitation with WebGL 1.0 GLSL, as we're expecting something to break the loop in any case
+								int hardcoded_iteration_limit = 0x7FFFFFFF;
+
+								bformata(glsl, "for(int %s = 0 ; %s < 0x%X ; %s++){\n", name->data, name->data, hardcoded_iteration_limit, name->data);
+							}
+							else
+							{
+								bcatcstr(glsl, "while(true){\n");
+							}
 							++psContext->indent;
 						}
 						break;
@@ -3488,14 +3681,7 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 
 						 psContext->psShader->sInfo.GetResourceFromBindingPoint(RGROUP_TEXTURE, psInst->asOperands[2].ui32RegisterNumber, &psBinding);
 
-						 if (psInst->bAddressOffset)
-						 {
-							 TranslateTexelFetchOffset(psInst, psBinding, glsl);
-						 }
-						 else
-						 {
-							 TranslateTexelFetch(psInst, psBinding, glsl);
-						 }
+						 TranslateTexelFetch(psInst, psBinding, glsl);
 						 break;
 	}
 	case OPCODE_DISCARD:
@@ -3859,9 +4045,9 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 #endif
 					   psContext->AddIndentation();
 					   AddAssignToDest(&psInst->asOperands[0], SVT_FLOAT, srcElemCount, &numParenthesis);
-					   bcatcstr(glsl, GetConstructorForTypeGLSL(SVT_FLOAT, destElemCount, false));
+					   bcatcstr(glsl, GetConstructorForTypeGLSL(psContext, SVT_FLOAT, destElemCount, false));
 					   bcatcstr(glsl, "(1.0) / ");
-					   bcatcstr(glsl, GetConstructorForTypeGLSL(SVT_FLOAT, destElemCount, false));
+					   bcatcstr(glsl, GetConstructorForTypeGLSL(psContext, SVT_FLOAT, destElemCount, false));
 					   bcatcstr(glsl, "(");
 					   numParenthesis++;
 					   TranslateOperand(&psInst->asOperands[1], TO_FLAG_NONE, psInst->asOperands[0].GetAccessMask());
@@ -3870,71 +4056,56 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 	}
 	case OPCODE_F32TOF16:
 	{
-							const uint32_t destElemCount = psInst->asOperands[0].GetNumSwizzleElements();
-							const uint32_t s0ElemCount = psInst->asOperands[1].GetNumSwizzleElements();
-							uint32_t destElem;
+		uint32_t writeMask = psInst->asOperands[0].GetAccessMask();
+
 #ifdef _DEBUG
-							psContext->AddIndentation();
-							bcatcstr(glsl, "//F32TOF16\n");
+		psContext->AddIndentation();
+		bcatcstr(glsl, "//F32TOF16\n");
 #endif
-							for (destElem = 0; destElem < destElemCount; ++destElem)
-							{
-								const char* swizzle[] = { ".x", ".y", ".z", ".w" };
 
-								//unpackHalf2x16 converts two f16s packed into uint to two f32s.
+		for (int i = 0; i < 4; i++)
+		{
+			if ((writeMask & (1 << i)) == 0)
+				continue;
+			psContext->AddIndentation();
+			psInst->asOperands[0].ui32CompMask = (1 << i);
+			psInst->asOperands[0].eSelMode = OPERAND_4_COMPONENT_MASK_MODE;
+			AddAssignToDest(&psInst->asOperands[0], SVT_UINT, 1, &numParenthesis);
 
-								//dest.swiz.x = unpackHalf2x16(src.swiz.x).x
-								//dest.swiz.y = unpackHalf2x16(src.swiz.y).x
-								//dest.swiz.z = unpackHalf2x16(src.swiz.z).x
-								//dest.swiz.w = unpackHalf2x16(src.swiz.w).x
+			bcatcstr(glsl, "packHalf2x16(vec2(");
+			TranslateOperand(&psInst->asOperands[1], TO_FLAG_NONE, (1 << i));
+			bcatcstr(glsl, ", 0.0))");
+			AddAssignPrologue(numParenthesis);
 
-								psContext->AddIndentation();
-								TranslateOperand(&psInst->asOperands[0], TO_FLAG_DESTINATION);
-								if (destElemCount > 1)
-									bcatcstr(glsl, swizzle[destElem]);
-
-								bcatcstr(glsl, " = unpackHalf2x16(");
-								TranslateOperand(&psInst->asOperands[1], TO_FLAG_UNSIGNED_INTEGER);
-								if (s0ElemCount > 1)
-									bcatcstr(glsl, swizzle[destElem]);
-								bcatcstr(glsl, ").x;\n");
-
-							}
-							break;
+		}
+		break;
 	}
 	case OPCODE_F16TOF32:
 	{
-							const uint32_t destElemCount = psInst->asOperands[0].GetNumSwizzleElements();
-							const uint32_t s0ElemCount = psInst->asOperands[1].GetNumSwizzleElements();
-							uint32_t destElem;
+		uint32_t writeMask = psInst->asOperands[0].GetAccessMask();
+
 #ifdef _DEBUG
-							psContext->AddIndentation();
-							bcatcstr(glsl, "//F16TOF32\n");
+		psContext->AddIndentation();
+		bcatcstr(glsl, "//F16TOF32\n");
 #endif
-							for (destElem = 0; destElem < destElemCount; ++destElem)
-							{
-								const char* swizzle[] = { ".x", ".y", ".z", ".w" };
 
-								//packHalf2x16 converts two f32s to two f16s packed into a uint.
+		for (int i = 0; i < 4; i++)
+		{
+			if ((writeMask & (1 << i)) == 0)
+				continue;
+			psContext->AddIndentation();
+			psInst->asOperands[0].ui32CompMask = (1 << i);
+			psInst->asOperands[0].eSelMode = OPERAND_4_COMPONENT_MASK_MODE;
+			AddAssignToDest(&psInst->asOperands[0], SVT_FLOAT, 1, &numParenthesis);
 
-								//dest.swiz.x = packHalf2x16(vec2(src.swiz.x)) & 0xFFFF
-								//dest.swiz.y = packHalf2x16(vec2(src.swiz.y)) & 0xFFFF
-								//dest.swiz.z = packHalf2x16(vec2(src.swiz.z)) & 0xFFFF
-								//dest.swiz.w = packHalf2x16(vec2(src.swiz.w)) & 0xFFFF
+			bcatcstr(glsl, "unpackHalf2x16(");
+			TranslateOperand(&psInst->asOperands[1], TO_AUTO_BITCAST_TO_UINT, (1 << i));
+			bcatcstr(glsl, ").x");
+			AddAssignPrologue(numParenthesis);
+		}
+		break;
 
-								psContext->AddIndentation();
-								TranslateOperand(&psInst->asOperands[0], TO_FLAG_DESTINATION | TO_FLAG_UNSIGNED_INTEGER);
-								if (destElemCount > 1)
-									bcatcstr(glsl, swizzle[destElem]);
 
-								bcatcstr(glsl, " = packHalf2x16(vec2(");
-								TranslateOperand(&psInst->asOperands[1], TO_FLAG_NONE);
-								if (s0ElemCount > 1)
-									bcatcstr(glsl, swizzle[destElem]);
-								bcatcstr(glsl, ")) & 0xFFFF;\n");
-
-							}
-							break;
 	}
 	case OPCODE_INEG:
 	{
@@ -4063,16 +4234,30 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 	case OPCODE_NOT:
 	{
 #ifdef _DEBUG
-					   psContext->AddIndentation();
-					   bcatcstr(glsl, "//INOT\n");
+						psContext->AddIndentation();
+						bcatcstr(glsl, "//NOT\n");
 #endif
-					   psContext->AddIndentation();
-					   AddAssignToDest(&psInst->asOperands[0], SVT_INT, psInst->asOperands[1].GetNumSwizzleElements(), &numParenthesis);
+						if (!HaveNativeBitwiseOps(psContext->psShader->eTargetLanguage))
+						{
+							UseExtraFunctionDependency("op_not");
 
-					   bcatcstr(glsl, "~");
-					   TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER, psInst->asOperands[0].GetAccessMask());
-					   AddAssignPrologue(numParenthesis);
-					   break;
+							psContext->AddIndentation();
+							AddAssignToDest(&psInst->asOperands[0], SVT_INT, psInst->asOperands[1].GetNumSwizzleElements(), &numParenthesis);
+							bcatcstr(glsl, "op_not(");
+							numParenthesis++;
+							TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER, psInst->asOperands[0].GetAccessMask());
+							AddAssignPrologue(numParenthesis);
+						}
+						else
+						{
+							psContext->AddIndentation();
+							AddAssignToDest(&psInst->asOperands[0], SVT_INT, psInst->asOperands[1].GetNumSwizzleElements(), &numParenthesis);
+
+							bcatcstr(glsl, "~");
+							TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER, psInst->asOperands[0].GetAccessMask());
+							AddAssignPrologue(numParenthesis);
+						}
+						break;
 	}
 	case OPCODE_XOR:
 	{
@@ -4086,16 +4271,18 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 	case OPCODE_RESINFO:
 	{
 
-						   uint32_t destElemCount = psInst->asOperands[0].GetNumSwizzleElements();
 						   uint32_t destElem;
+                           uint32_t mask = psInst->asOperands[0].GetAccessMask();
+
 #ifdef _DEBUG
 						   psContext->AddIndentation();
 						   bcatcstr(glsl, "//RESINFO\n");
 #endif
 
-						   for (destElem = 0; destElem < destElemCount; ++destElem)
+						   for (destElem = 0; destElem < 4; ++destElem)
 						   {
-							   GetResInfoData(psInst, psInst->asOperands[2].aui32Swizzle[destElem], destElem);
+                               if (1 << destElem & mask)
+                                   GetResInfoData(psInst, psInst->asOperands[2].aui32Swizzle[destElem], destElem);
 						   }
 
 						   break;
@@ -4121,9 +4308,21 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 #endif
 		const RESINFO_RETURN_TYPE eResInfoReturnType = psInst->eResInfoReturnType;
 		psContext->AddIndentation();
-		AddAssignToDest(&psInst->asOperands[0], eResInfoReturnType == RESINFO_INSTRUCTION_RETURN_UINT ? SVT_UINT : SVT_FLOAT, 1, &numParenthesis);
+		AddAssignToDest(&psInst->asOperands[0], eResInfoReturnType == RESINFO_INSTRUCTION_RETURN_FLOAT ? SVT_FLOAT : SVT_UINT, 1, &numParenthesis);
 		bcatcstr(glsl, "textureSamples(");
-		TranslateOperand(&psInst->asOperands[1], TO_FLAG_NAME_ONLY);
+		std::string texName = ResourceName(psContext, RGROUP_TEXTURE, psInst->asOperands[1].ui32RegisterNumber, 0);
+		if (psContext->IsVulkan())
+		{
+			std::string vulkanSamplerName = GetVulkanDummySamplerName();
+
+			const RESOURCE_DIMENSION eResDim = psContext->psShader->aeResourceDims[psInst->asOperands[2].ui32RegisterNumber];
+			std::string smpType = GetSamplerType(psContext, eResDim, psInst->asOperands[2].ui32RegisterNumber);
+			std::ostringstream oss;
+			oss << smpType;
+			oss << "(" << texName << ", " << vulkanSamplerName << ")";
+			texName = oss.str();
+		}
+		bcatcstr(glsl, texName.c_str());
 		bcatcstr(glsl, ")");
 		AddAssignPrologue(numParenthesis);
 		break;

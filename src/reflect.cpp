@@ -564,6 +564,10 @@ void LoadShaderInfo(const uint32_t ui32MajorVersion,
 
     psInfo->eTessOutPrim = TESSELLATOR_OUTPUT_UNDEFINED;
     psInfo->eTessPartitioning = TESSELLATOR_PARTITIONING_UNDEFINED;
+    psInfo->ui32TessInputControlPointCount = 0;
+    psInfo->ui32TessOutputControlPointCount = 0;
+    psInfo->eTessDomain = TESSELLATOR_DOMAIN_UNDEFINED;
+    psInfo->bEarlyFragmentTests = false;
 
     psInfo->ui32MajorVersion = ui32MajorVersion;
     psInfo->ui32MinorVersion = ui32MinorVersion;
