@@ -1164,7 +1164,7 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
                         if (((psVarType->Class == SVC_MATRIX_COLUMNS) || (psVarType->Class == SVC_MATRIX_ROWS)) && (psVarType->Elements > 1) && ((psContext->flags & HLSLCC_FLAG_TRANSLATE_MATRICES) == 0))
                         {
                             // Special handling for old matrix arrays
-                            bformata(glsl, "%%s / 4%s", squareBrackets[squareBracketType][0], fullIndexOss.str().c_str(), squareBrackets[squareBracketType][1]);
+                            bformata(glsl, "%s%s / 4%s", squareBrackets[squareBracketType][0], fullIndexOss.str().c_str(), squareBrackets[squareBracketType][1]);
                             bformata(glsl, "%s%s %% 4%s", squareBrackets[squareBracketType][0], fullIndexOss.str().c_str(), squareBrackets[squareBracketType][1]);
                         }
                         else // This path is atm the default

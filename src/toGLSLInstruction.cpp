@@ -4315,7 +4315,7 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
 		{
 			std::string vulkanSamplerName = GetVulkanDummySamplerName();
 
-			const RESOURCE_DIMENSION eResDim = psContext->psShader->aeResourceDims[psInst->asOperands[2].ui32RegisterNumber];
+			const RESOURCE_DIMENSION eResDim = psContext->psShader->aeResourceDims[psInst->asOperands[1].ui32RegisterNumber];
 			std::string smpType = GetSamplerType(psContext, eResDim, psInst->asOperands[2].ui32RegisterNumber);
 			std::ostringstream oss;
 			oss << smpType;
