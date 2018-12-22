@@ -6,14 +6,15 @@
 #define ASSERT(expr) CustomAssert(expr)
 static void CustomAssert(int expression)
 {
-    if(!expression)
+    if (!expression)
     {
         assert(0);
     }
 }
+
 #else
 #define UNUSED(EXPR_) \
-	do { if (false) (void)(EXPR_); } while(0)
+    do { if (false) (void)(EXPR_); } while(0)
 #define ASSERT(expr) UNUSED(expr)
 #endif
 

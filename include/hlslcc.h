@@ -6,7 +6,7 @@
 #include <map>
 #include <algorithm>
 
-#if defined (_WIN32) && defined(HLSLCC_DYNLIB)
+#if defined(_WIN32) && defined(HLSLCC_DYNLIB)
     #define HLSLCC_APIENTRY __stdcall
     #if defined(libHLSLcc_EXPORTS)
         #define HLSLCC_API __declspec(dllexport)
@@ -24,9 +24,9 @@
 typedef enum
 {
     LANG_DEFAULT,// Depends on the HLSL shader model.
-    LANG_ES_100, LANG_ES_FIRST=LANG_ES_100,
+    LANG_ES_100, LANG_ES_FIRST = LANG_ES_100,
     LANG_ES_300,
-	LANG_ES_310, LANG_ES_LAST = LANG_ES_310,
+    LANG_ES_310, LANG_ES_LAST = LANG_ES_310,
     LANG_120, LANG_GL_FIRST = LANG_120,
     LANG_130,
     LANG_140,
@@ -37,15 +37,16 @@ typedef enum
     LANG_420,
     LANG_430,
     LANG_440, LANG_GL_LAST = LANG_440,
-	LANG_METAL,
+    LANG_METAL,
 } GLLang;
 
-typedef struct GlExtensions {
-	uint32_t ARB_explicit_attrib_location : 1;
-	uint32_t ARB_explicit_uniform_location : 1;
-	uint32_t ARB_shading_language_420pack : 1;
-	uint32_t OVR_multiview : 1;
-	uint32_t EXT_shader_framebuffer_fetch : 1;
+typedef struct GlExtensions
+{
+    uint32_t ARB_explicit_attrib_location : 1;
+    uint32_t ARB_explicit_uniform_location : 1;
+    uint32_t ARB_shading_language_420pack : 1;
+    uint32_t OVR_multiview : 1;
+    uint32_t EXT_shader_framebuffer_fetch : 1;
 } GlExtensions;
 
 #include "ShaderInfo.h"
@@ -65,11 +66,11 @@ typedef enum INTERPOLATION_MODE
     INTERPOLATION_LINEAR_NOPERSPECTIVE_SAMPLE = 7,
 } INTERPOLATION_MODE;
 
-#define PS_FLAG_VERTEX_SHADER	0x1
-#define PS_FLAG_HULL_SHADER		0x2
-#define PS_FLAG_DOMAIN_SHADER	0x4
+#define PS_FLAG_VERTEX_SHADER   0x1
+#define PS_FLAG_HULL_SHADER     0x2
+#define PS_FLAG_DOMAIN_SHADER   0x4
 #define PS_FLAG_GEOMETRY_SHADER 0x8
-#define PS_FLAG_PIXEL_SHADER	0x10
+#define PS_FLAG_PIXEL_SHADER    0x10
 
 #define TO_FLAG_NONE    0x0
 #define TO_FLAG_INTEGER 0x1
@@ -99,42 +100,42 @@ typedef enum INTERPOLATION_MODE
 
 typedef enum
 {
-	INVALID_SHADER = -1,
-	PIXEL_SHADER,
-	VERTEX_SHADER,
-	GEOMETRY_SHADER,
-	HULL_SHADER,
-	DOMAIN_SHADER,
-	COMPUTE_SHADER,
+    INVALID_SHADER = -1,
+    PIXEL_SHADER,
+    VERTEX_SHADER,
+    GEOMETRY_SHADER,
+    HULL_SHADER,
+    DOMAIN_SHADER,
+    COMPUTE_SHADER,
 } SHADER_TYPE;
 
-// Enum for texture dimension reflection data 
+// Enum for texture dimension reflection data
 typedef enum
 {
-	TD_FLOAT = 0,
-	TD_INT,
-	TD_2D,
-	TD_3D,
-	TD_CUBE,
-	TD_2DSHADOW,
-	TD_2DARRAY,
-	TD_CUBEARRAY
+    TD_FLOAT = 0,
+    TD_INT,
+    TD_2D,
+    TD_3D,
+    TD_CUBE,
+    TD_2DSHADOW,
+    TD_2DARRAY,
+    TD_CUBEARRAY
 } HLSLCC_TEX_DIMENSION;
 
 // The prefix for all temporary variables used by the generated code.
 // Using a texture or uniform name like this will cause conflicts
 #define HLSLCC_TEMP_PREFIX "u_xlat"
 
-typedef std::vector<std::pair<std::string, std::string>> MemberDefinitions;
+typedef std::vector<std::pair<std::string, std::string> > MemberDefinitions;
 
 // We store struct definition contents inside a vector of strings
 struct StructDefinition
 {
-	StructDefinition() : m_Members(), m_Dependencies(), m_IsPrinted(false) {}
+    StructDefinition() : m_Members(), m_Dependencies(), m_IsPrinted(false) {}
 
-	MemberDefinitions m_Members; // A vector of strings with the struct members
-	std::vector<std::string> m_Dependencies; // A vector of struct names this struct depends on.
-	bool m_IsPrinted; // Has this struct been printed out yet?
+    MemberDefinitions m_Members; // A vector of strings with the struct members
+    std::vector<std::string> m_Dependencies; // A vector of struct names this struct depends on.
+    bool m_IsPrinted; // Has this struct been printed out yet?
 };
 
 typedef std::map<std::string, StructDefinition> StructDefinitions;
@@ -146,65 +147,65 @@ typedef std::map<std::string, std::string> FunctionDefinitions;
 // (because both UAVs and textures use the same slots in Metal, also constant buffers and other buffers etc)
 class BindingSlotAllocator
 {
-	typedef std::map<uint32_t, uint32_t> SlotMap;
-	SlotMap m_Allocations;
-	uint32_t m_ShaderStageAllocations;
+    typedef std::map<uint32_t, uint32_t> SlotMap;
+    SlotMap m_Allocations;
+    uint32_t m_ShaderStageAllocations;
 public:
-	BindingSlotAllocator() : m_Allocations(), m_ShaderStageAllocations(0)
-	{
-		for(int i = MAX_RESOURCE_BINDINGS-1; i >= 0; i --)
-			m_FreeSlots.push_back(i);
-	}
+    BindingSlotAllocator() : m_Allocations(), m_ShaderStageAllocations(0)
+    {
+        for (int i = MAX_RESOURCE_BINDINGS - 1; i >= 0; i--)
+            m_FreeSlots.push_back(i);
+    }
 
-	enum BindType
-	{
-		ConstantBuffer = 0,
-		RWBuffer,
-		Texture,
-		UAV
-	};
+    enum BindType
+    {
+        ConstantBuffer = 0,
+        RWBuffer,
+        Texture,
+        UAV
+    };
 
-	uint32_t GetBindingSlot(uint32_t regNo, BindType type)
-	{
-		// The key is regNumber with the bindtype stored to highest 16 bits
-		uint32_t key = (m_ShaderStageAllocations + regNo) | (uint32_t(type) << 16);
-		SlotMap::iterator itr = m_Allocations.find(key);
-		if(itr == m_Allocations.end())
-		{
-			uint32_t slot = m_FreeSlots.back();
-			m_FreeSlots.pop_back();
-			m_Allocations.insert(std::make_pair(key, slot));
-			return slot;
-		}
-		return itr->second;
-	}
+    uint32_t GetBindingSlot(uint32_t regNo, BindType type)
+    {
+        // The key is regNumber with the bindtype stored to highest 16 bits
+        uint32_t key = (m_ShaderStageAllocations + regNo) | (uint32_t(type) << 16);
+        SlotMap::iterator itr = m_Allocations.find(key);
+        if (itr == m_Allocations.end())
+        {
+            uint32_t slot = m_FreeSlots.back();
+            m_FreeSlots.pop_back();
+            m_Allocations.insert(std::make_pair(key, slot));
+            return slot;
+        }
+        return itr->second;
+    }
 
-	// Func for reserving binding slots with the original reg number.
-	// Used for fragment shader UAVs (SetRandomWriteTarget etc).
-	void ReserveBindingSlot(uint32_t regNo, BindType type)
-	{
-		uint32_t key = regNo | (uint32_t(type) << 16);
-		m_Allocations.insert(std::make_pair(key, regNo));
+    // Func for reserving binding slots with the original reg number.
+    // Used for fragment shader UAVs (SetRandomWriteTarget etc).
+    void ReserveBindingSlot(uint32_t regNo, BindType type)
+    {
+        uint32_t key = regNo | (uint32_t(type) << 16);
+        m_Allocations.insert(std::make_pair(key, regNo));
 
-		// Remove regNo from free slots
-		for (int i = m_FreeSlots.size() - 1; i >= 0; i--)
-		{
-			if (m_FreeSlots[i] == regNo)
-			{
-				m_FreeSlots.erase(m_FreeSlots.begin() + i);
-				return;
-			}
-		}
-	}
+        // Remove regNo from free slots
+        for (int i = m_FreeSlots.size() - 1; i >= 0; i--)
+        {
+            if (m_FreeSlots[i] == regNo)
+            {
+                m_FreeSlots.erase(m_FreeSlots.begin() + i);
+                return;
+            }
+        }
+    }
 
-	uint32_t SaveTotalShaderStageAllocationsCount()
-	{
-		m_ShaderStageAllocations = m_Allocations.size();
-		return m_ShaderStageAllocations;
-	}
+    uint32_t SaveTotalShaderStageAllocationsCount()
+    {
+        m_ShaderStageAllocations = m_Allocations.size();
+        return m_ShaderStageAllocations;
+    }
 
 private:
-	std::vector<uint32_t> m_FreeSlots;
+    std::vector<uint32_t> m_FreeSlots;
 };
 
 //The shader stages (Vertex, Pixel et al) do not depend on each other
@@ -220,156 +221,155 @@ private:
 class GLSLCrossDependencyData
 {
 public:
-	// A container for a single Vulkan resource binding (<set, binding> pair)
-	typedef std::pair<uint32_t, uint32_t> VulkanResourceBinding;
+    // A container for a single Vulkan resource binding (<set, binding> pair)
+    typedef std::pair<uint32_t, uint32_t> VulkanResourceBinding;
 
 private:
-	//Required if PixelInterpDependency is true
-	std::vector<INTERPOLATION_MODE> pixelInterpolation;
-	
-	// Map of varying locations, indexed by varying names.
-	typedef std::map<std::string, uint32_t> VaryingLocations;
+    //Required if PixelInterpDependency is true
+    std::vector<INTERPOLATION_MODE> pixelInterpolation;
 
-	static const int MAX_NAMESPACES = 6; // Max namespaces: vert input, hull input, domain input, geom input, ps input, (ps output)
+    // Map of varying locations, indexed by varying names.
+    typedef std::map<std::string, uint32_t> VaryingLocations;
 
-	VaryingLocations varyingLocationsMap[MAX_NAMESPACES];
-	uint32_t nextAvailableVaryingLocation[MAX_NAMESPACES];
+    static const int MAX_NAMESPACES = 6; // Max namespaces: vert input, hull input, domain input, geom input, ps input, (ps output)
 
-	typedef std::map<std::string, VulkanResourceBinding> VulkanResourceBindings;
-	VulkanResourceBindings m_VulkanResourceBindings;
-	uint32_t m_NextAvailableVulkanResourceBinding[8]; // one per set. 
+    VaryingLocations varyingLocationsMap[MAX_NAMESPACES];
+    uint32_t nextAvailableVaryingLocation[MAX_NAMESPACES];
 
-	inline int GetVaryingNamespace(SHADER_TYPE eShaderType, bool isInput)
-	{
-		switch (eShaderType)
-		{
-		case VERTEX_SHADER:
-			return isInput ? 0 : 1;
+    typedef std::map<std::string, VulkanResourceBinding> VulkanResourceBindings;
+    VulkanResourceBindings m_VulkanResourceBindings;
+    uint32_t m_NextAvailableVulkanResourceBinding[8]; // one per set.
 
-		case HULL_SHADER:
-			return isInput ? 1 : 2;
+    inline int GetVaryingNamespace(SHADER_TYPE eShaderType, bool isInput)
+    {
+        switch (eShaderType)
+        {
+            case VERTEX_SHADER:
+                return isInput ? 0 : 1;
 
-		case DOMAIN_SHADER:
-			return isInput ? 2 : 3;
+            case HULL_SHADER:
+                return isInput ? 1 : 2;
 
-		case GEOMETRY_SHADER:
-			// The input depends on whether there's a tessellation shader before us
-			if (isInput)
-			{
-				return ui32ProgramStages & PS_FLAG_DOMAIN_SHADER ? 3 : 1;
-			}
-			return 4;
+            case DOMAIN_SHADER:
+                return isInput ? 2 : 3;
 
-		case PIXEL_SHADER:
-			// The inputs can come from geom shader, domain shader or directly from vertex shader
-			if (isInput)
-			{
-				if (ui32ProgramStages & PS_FLAG_GEOMETRY_SHADER)
-				{
-					return 4;
-				}
-				else if (ui32ProgramStages & PS_FLAG_DOMAIN_SHADER)
-				{
-					return 3;
-				}
-				else
-				{
-					return 1;
-				}
-			}
-			return 5; // This value never really used
-		default:
-			return 0;
-		}
-	}
+            case GEOMETRY_SHADER:
+                // The input depends on whether there's a tessellation shader before us
+                if (isInput)
+                {
+                    return ui32ProgramStages & PS_FLAG_DOMAIN_SHADER ? 3 : 1;
+                }
+                return 4;
 
-	typedef std::map<std::string, uint32_t> SpecializationConstantMap;
-	SpecializationConstantMap m_SpecConstantMap;
-	uint32_t m_NextSpecID;
+            case PIXEL_SHADER:
+                // The inputs can come from geom shader, domain shader or directly from vertex shader
+                if (isInput)
+                {
+                    if (ui32ProgramStages & PS_FLAG_GEOMETRY_SHADER)
+                    {
+                        return 4;
+                    }
+                    else if (ui32ProgramStages & PS_FLAG_DOMAIN_SHADER)
+                    {
+                        return 3;
+                    }
+                    else
+                    {
+                        return 1;
+                    }
+                }
+                return 5; // This value never really used
+            default:
+                return 0;
+        }
+    }
+
+    typedef std::map<std::string, uint32_t> SpecializationConstantMap;
+    SpecializationConstantMap m_SpecConstantMap;
+    uint32_t m_NextSpecID;
 
 public:
-	GLSLCrossDependencyData()
-		: eTessPartitioning(),
-		eTessOutPrim(),
-		fMaxTessFactor(64.0),
-		numPatchesInThreadGroup(0),
-		hasControlPoint(false),
-		hasPatchConstant(false),
-		ui32ProgramStages(0),
-		m_ExtBlendModes(),
-		m_NextSpecID(0)
-	{ 
-		memset(nextAvailableVaryingLocation, 0, sizeof(nextAvailableVaryingLocation));
-		memset(m_NextAvailableVulkanResourceBinding, 0, sizeof(m_NextAvailableVulkanResourceBinding));
-	}
+    GLSLCrossDependencyData()
+        : eTessPartitioning(),
+        eTessOutPrim(),
+        fMaxTessFactor(64.0),
+        numPatchesInThreadGroup(0),
+        hasControlPoint(false),
+        hasPatchConstant(false),
+        ui32ProgramStages(0),
+        m_ExtBlendModes(),
+        m_NextSpecID(0)
+    {
+        memset(nextAvailableVaryingLocation, 0, sizeof(nextAvailableVaryingLocation));
+        memset(m_NextAvailableVulkanResourceBinding, 0, sizeof(m_NextAvailableVulkanResourceBinding));
+    }
 
+    // Retrieve the location for a varying with a given name.
+    // If the name doesn't already have an allocated location, allocate one
+    // and store it into the map.
+    inline uint32_t GetVaryingLocation(const std::string &name, SHADER_TYPE eShaderType, bool isInput)
+    {
+        int nspace = GetVaryingNamespace(eShaderType, isInput);
+        VaryingLocations::iterator itr = varyingLocationsMap[nspace].find(name);
+        if (itr != varyingLocationsMap[nspace].end())
+            return itr->second;
 
-	// Retrieve the location for a varying with a given name.
-	// If the name doesn't already have an allocated location, allocate one
-	// and store it into the map.
-	inline uint32_t GetVaryingLocation(const std::string &name, SHADER_TYPE eShaderType, bool isInput)
-	{
-		int nspace = GetVaryingNamespace(eShaderType, isInput);
-		VaryingLocations::iterator itr = varyingLocationsMap[nspace].find(name);
-		if (itr != varyingLocationsMap[nspace].end())
-			return itr->second;
+        uint32_t newKey = nextAvailableVaryingLocation[nspace];
+        nextAvailableVaryingLocation[nspace]++;
+        varyingLocationsMap[nspace].insert(std::make_pair(name, newKey));
+        return newKey;
+    }
 
-		uint32_t newKey = nextAvailableVaryingLocation[nspace];
-		nextAvailableVaryingLocation[nspace]++;
-		varyingLocationsMap[nspace].insert(std::make_pair(name, newKey));
-		return newKey;
-	}
+    // Retrieve the binding for a resource (texture, constant buffer, image) with a given name
+    // If not found, allocate a new one (in set 0) and return that
+    // The returned value is a pair of <set, binding>
+    // If the name contains "hlslcc_set_X_bind_Y", those values (from the first found occurence in the name)
+    // will be used instead, and all occurences of that string will be removed from name, so name parameter can be modified
+    // if allocRoomForCounter is true, the following binding number in the same set will be allocated with name + '_counter'
+    inline std::pair<uint32_t, uint32_t> GetVulkanResourceBinding(std::string &name, bool allocRoomForCounter = false, uint32_t preferredSet = 0)
+    {
+        // scan for the special marker
+        const char *marker = "Xhlslcc_set_%d_bind_%dX";
+        uint32_t Set = 0, Binding = 0;
+        size_t startLoc = name.find("Xhlslcc");
+        if ((startLoc != std::string::npos) && (sscanf(name.c_str() + startLoc, marker, &Set, &Binding) == 2))
+        {
+            // Get rid of all markers
+            while ((startLoc = name.find("Xhlslcc")) != std::string::npos)
+            {
+                size_t endLoc = name.find('X', startLoc + 1);
+                if (endLoc == std::string::npos)
+                    break;
+                name.erase(startLoc, endLoc - startLoc + 1);
+            }
+            // Add to map
+            VulkanResourceBinding newBind = std::make_pair(Set, Binding);
+            m_VulkanResourceBindings.insert(std::make_pair(name, newBind));
+            if (allocRoomForCounter)
+            {
+                VulkanResourceBinding counterBind = std::make_pair(Set, Binding + 1);
+                m_VulkanResourceBindings.insert(std::make_pair(name + "_counter", counterBind));
+            }
 
-	// Retrieve the binding for a resource (texture, constant buffer, image) with a given name
-	// If not found, allocate a new one (in set 0) and return that
-	// The returned value is a pair of <set, binding>
-	// If the name contains "hlslcc_set_X_bind_Y", those values (from the first found occurence in the name)
-	// will be used instead, and all occurences of that string will be removed from name, so name parameter can be modified
-	// if allocRoomForCounter is true, the following binding number in the same set will be allocated with name + '_counter'
-	inline std::pair<uint32_t, uint32_t> GetVulkanResourceBinding(std::string &name, bool allocRoomForCounter = false, uint32_t preferredSet = 0)
-	{
-		// scan for the special marker
-		const char *marker = "Xhlslcc_set_%d_bind_%dX";
-		uint32_t Set = 0, Binding = 0;
-		size_t startLoc = name.find("Xhlslcc");
-		if ((startLoc != std::string::npos) && (sscanf(name.c_str() + startLoc, marker, &Set, &Binding) == 2))
-		{
-			// Get rid of all markers
-			while ((startLoc = name.find("Xhlslcc")) != std::string::npos)
-			{
-				size_t endLoc = name.find('X', startLoc + 1);
-				if (endLoc == std::string::npos)
-					break;
-				name.erase(startLoc, endLoc - startLoc + 1);
-			}
-			// Add to map
-			VulkanResourceBinding newBind = std::make_pair(Set, Binding);
-			m_VulkanResourceBindings.insert(std::make_pair(name, newBind));
-			if (allocRoomForCounter)
-			{
-				VulkanResourceBinding counterBind = std::make_pair(Set, Binding+1);
-				m_VulkanResourceBindings.insert(std::make_pair(name + "_counter", counterBind));
-			}
+            return newBind;
+        }
 
-			return newBind;
-		}
+        VulkanResourceBindings::iterator itr = m_VulkanResourceBindings.find(name);
+        if (itr != m_VulkanResourceBindings.end())
+            return itr->second;
 
-		VulkanResourceBindings::iterator itr = m_VulkanResourceBindings.find(name);
-		if (itr != m_VulkanResourceBindings.end())
-			return itr->second;
-
-		// Allocate a new one
-		VulkanResourceBinding newBind = std::make_pair(preferredSet, m_NextAvailableVulkanResourceBinding[preferredSet]);
-		m_NextAvailableVulkanResourceBinding[preferredSet]++;
-		m_VulkanResourceBindings.insert(std::make_pair(name, newBind));
-		if (allocRoomForCounter)
-		{
-			VulkanResourceBinding counterBind = std::make_pair(preferredSet, m_NextAvailableVulkanResourceBinding[preferredSet]);
-			m_NextAvailableVulkanResourceBinding[preferredSet]++;
-			m_VulkanResourceBindings.insert(std::make_pair(name + "_counter", counterBind));
-		}
-		return newBind;
-	}
+        // Allocate a new one
+        VulkanResourceBinding newBind = std::make_pair(preferredSet, m_NextAvailableVulkanResourceBinding[preferredSet]);
+        m_NextAvailableVulkanResourceBinding[preferredSet]++;
+        m_VulkanResourceBindings.insert(std::make_pair(name, newBind));
+        if (allocRoomForCounter)
+        {
+            VulkanResourceBinding counterBind = std::make_pair(preferredSet, m_NextAvailableVulkanResourceBinding[preferredSet]);
+            m_NextAvailableVulkanResourceBinding[preferredSet]++;
+            m_VulkanResourceBindings.insert(std::make_pair(name + "_counter", counterBind));
+        }
+        return newBind;
+    }
 
     //dcl_tessellator_partitioning and dcl_tessellator_output_primitive appear in hull shader for D3D,
     //but they appear on inputs inside domain shaders for GL.
@@ -383,74 +383,75 @@ public:
     bool hasControlPoint;
     bool hasPatchConstant;
 
-	// Bitfield for the shader stages this program is going to include (see PS_FLAG_*).
-	// Needed so we can construct proper shader input and output names
-	uint32_t ui32ProgramStages;
+    // Bitfield for the shader stages this program is going to include (see PS_FLAG_*).
+    // Needed so we can construct proper shader input and output names
+    uint32_t ui32ProgramStages;
 
-	std::vector<std::string> m_ExtBlendModes; // The blend modes (from KHR_blend_equation_advanced) requested for this shader. See ext spec for list.
-	
-	inline INTERPOLATION_MODE GetInterpolationMode(uint32_t regNo)
-	{
-		if (regNo >= pixelInterpolation.size())
-			return INTERPOLATION_UNDEFINED;
-		else
-			return pixelInterpolation[regNo];
-	}
+    std::vector<std::string> m_ExtBlendModes; // The blend modes (from KHR_blend_equation_advanced) requested for this shader. See ext spec for list.
 
-	inline void SetInterpolationMode(uint32_t regNo, INTERPOLATION_MODE mode)
-	{
-		if (regNo >= pixelInterpolation.size())
-			pixelInterpolation.resize((regNo + 1) * 2, INTERPOLATION_UNDEFINED);
+    inline INTERPOLATION_MODE GetInterpolationMode(uint32_t regNo)
+    {
+        if (regNo >= pixelInterpolation.size())
+            return INTERPOLATION_UNDEFINED;
+        else
+            return pixelInterpolation[regNo];
+    }
 
-		pixelInterpolation[regNo] = mode;
-	}
+    inline void SetInterpolationMode(uint32_t regNo, INTERPOLATION_MODE mode)
+    {
+        if (regNo >= pixelInterpolation.size())
+            pixelInterpolation.resize((regNo + 1) * 2, INTERPOLATION_UNDEFINED);
 
-	struct CompareFirst
-	{
-		CompareFirst(std::string val) : m_Val (val) {}
-		bool operator()(const std::pair<std::string, std::string>& elem) const
-		{
-			return m_Val == elem.first;
-		}
-		private:
-		std::string m_Val;
-	};
+        pixelInterpolation[regNo] = mode;
+    }
 
-	inline bool IsMemberDeclared(const std::string &name)
-	{
-		if (std::find_if(m_SharedFunctionMembers.begin(), m_SharedFunctionMembers.end(), CompareFirst(name)) != m_SharedFunctionMembers.end())
-			return true;
-		return false;
-	}
+    struct CompareFirst
+    {
+        CompareFirst(std::string val) : m_Val(val) {}
+        bool operator()(const std::pair<std::string, std::string>& elem) const
+        {
+            return m_Val == elem.first;
+        }
 
-	MemberDefinitions m_SharedFunctionMembers;
-	BindingSlotAllocator m_SharedTextureSlots, m_SharedSamplerSlots;
-	BindingSlotAllocator m_SharedBufferSlots;
+    private:
+        std::string m_Val;
+    };
 
-	inline void ClearCrossDependencyData()
-	{
-		pixelInterpolation.clear();
-		for (int i = 0; i < MAX_NAMESPACES; i++)
-		{
-			varyingLocationsMap[i].clear();
-			nextAvailableVaryingLocation[i] = 0;
-		}
-		m_NextSpecID = kArraySizeConstantID + 1;
-		m_SpecConstantMap.clear();
-		m_SharedFunctionMembers.clear();
-	}
+    inline bool IsMemberDeclared(const std::string &name)
+    {
+        if (std::find_if(m_SharedFunctionMembers.begin(), m_SharedFunctionMembers.end(), CompareFirst(name)) != m_SharedFunctionMembers.end())
+            return true;
+        return false;
+    }
 
-	// Retrieve or allocate a layout slot for Vulkan specialization constant
-	inline uint32_t GetSpecializationConstantSlot(const std::string &name)
-	{
-		SpecializationConstantMap::iterator itr = m_SpecConstantMap.find(name);
-		if (itr != m_SpecConstantMap.end())
-			return itr->second;
+    MemberDefinitions m_SharedFunctionMembers;
+    BindingSlotAllocator m_SharedTextureSlots, m_SharedSamplerSlots;
+    BindingSlotAllocator m_SharedBufferSlots;
 
-		m_SpecConstantMap.insert(std::make_pair(std::string(name), m_NextSpecID));
+    inline void ClearCrossDependencyData()
+    {
+        pixelInterpolation.clear();
+        for (int i = 0; i < MAX_NAMESPACES; i++)
+        {
+            varyingLocationsMap[i].clear();
+            nextAvailableVaryingLocation[i] = 0;
+        }
+        m_NextSpecID = kArraySizeConstantID + 1;
+        m_SpecConstantMap.clear();
+        m_SharedFunctionMembers.clear();
+    }
 
-		return m_NextSpecID++;
-	}
+    // Retrieve or allocate a layout slot for Vulkan specialization constant
+    inline uint32_t GetSpecializationConstantSlot(const std::string &name)
+    {
+        SpecializationConstantMap::iterator itr = m_SpecConstantMap.find(name);
+        if (itr != m_SpecConstantMap.end())
+            return itr->second;
+
+        m_SpecConstantMap.insert(std::make_pair(std::string(name), m_NextSpecID));
+
+        return m_NextSpecID++;
+    }
 };
 
 struct GLSLShader
@@ -466,28 +467,28 @@ struct GLSLShader
 class HLSLccReflection
 {
 public:
-	HLSLccReflection() {}
-	virtual ~HLSLccReflection() {}
+    HLSLccReflection() {}
+    virtual ~HLSLccReflection() {}
 
-	// Called on errors or diagnostic messages
-	virtual void OnDiagnostics(const std::string &error, int line, bool isError) {}
+    // Called on errors or diagnostic messages
+    virtual void OnDiagnostics(const std::string &error, int line, bool isError) {}
 
-	virtual void OnInputBinding(const std::string &name, int bindIndex) {}
+    virtual void OnInputBinding(const std::string &name, int bindIndex) {}
 
-	// Returns false if this constant buffer is not needed for this shader. This info can be used for pruning unused 
-	// constant buffers and vars from compute shaders where we need broader context than a single kernel to know 
-	// if something can be dropped, as the constant buffers are shared between all kernels in a .compute file.
-	virtual bool OnConstantBuffer(const std::string &name, size_t bufferSize, size_t memberCount) { return true; }
+    // Returns false if this constant buffer is not needed for this shader. This info can be used for pruning unused
+    // constant buffers and vars from compute shaders where we need broader context than a single kernel to know
+    // if something can be dropped, as the constant buffers are shared between all kernels in a .compute file.
+    virtual bool OnConstantBuffer(const std::string &name, size_t bufferSize, size_t memberCount) { return true; }
 
-	// Returns false if this constant var is not needed for this shader. See above.
-	virtual bool OnConstant(const std::string &name, int bindIndex, SHADER_VARIABLE_TYPE cType, int rows, int cols, bool isMatrix, int arraySize) { return true; }
+    // Returns false if this constant var is not needed for this shader. See above.
+    virtual bool OnConstant(const std::string &name, int bindIndex, SHADER_VARIABLE_TYPE cType, int rows, int cols, bool isMatrix, int arraySize) { return true; }
 
-	virtual void OnConstantBufferBinding(const std::string &name, int bindIndex) {}
-	virtual void OnTextureBinding(const std::string &name, int bindIndex, int samplerIndex, bool multisampled, HLSLCC_TEX_DIMENSION dim, bool isUAV) {}
-	virtual void OnBufferBinding(const std::string &name, int bindIndex, bool isUAV) {}
-	virtual void OnThreadGroupSize(unsigned int xSize, unsigned int ySize, unsigned int zSize) {}
-	virtual void OnTessellationInfo(uint32_t tessPartitionMode, uint32_t tessOutputWindingOrder, uint32_t tessMaxFactor, uint32_t tessNumPatchesInThreadGroup) {}
-	virtual void OnTessellationKernelInfo(uint32_t patchKernelBufferCount) {}
+    virtual void OnConstantBufferBinding(const std::string &name, int bindIndex) {}
+    virtual void OnTextureBinding(const std::string &name, int bindIndex, int samplerIndex, bool multisampled, HLSLCC_TEX_DIMENSION dim, bool isUAV) {}
+    virtual void OnBufferBinding(const std::string &name, int bindIndex, bool isUAV) {}
+    virtual void OnThreadGroupSize(unsigned int xSize, unsigned int ySize, unsigned int zSize) {}
+    virtual void OnTessellationInfo(uint32_t tessPartitionMode, uint32_t tessOutputWindingOrder, uint32_t tessMaxFactor, uint32_t tessNumPatchesInThreadGroup) {}
+    virtual void OnTessellationKernelInfo(uint32_t patchKernelBufferCount) {}
 };
 
 
@@ -562,7 +563,7 @@ static const unsigned int HLSLCC_FLAG_VULKAN_BINDINGS = 0x40000;
 static const unsigned int HLSLCC_FLAG_METAL_SHADOW_SAMPLER_LINEAR = 0x80000;
 
 // If set, avoid emit atomic counter (ARB_shader_atomic_counters) and use atomic functions provided by ARB_shader_storage_buffer_object instead.
-static const unsigned int HLSLCC_FLAG_AVOID_SHADER_ATOMIC_COUNTERS = 0x100000; 
+static const unsigned int HLSLCC_FLAG_AVOID_SHADER_ATOMIC_COUNTERS = 0x100000;
 
 // If set, and generating Vulkan shaders, attempts to detect static branching and transforms them into specialization constants
 static const unsigned int HLSLCC_FLAG_VULKAN_SPECIALIZATION_CONSTANTS = 0x200000;
@@ -588,27 +589,26 @@ extern "C" {
 #endif
 
 HLSLCC_API int HLSLCC_APIENTRY TranslateHLSLFromFile(const char* filename,
-                                                     unsigned int flags,
-                                                     GLLang language,
-													 const GlExtensions *extensions,
-                                                     GLSLCrossDependencyData* dependencies,
-													 HLSLccSamplerPrecisionInfo& samplerPrecisions,
-													 HLSLccReflection& reflectionCallbacks,
-													 GLSLShader* result
-													 );
+    unsigned int flags,
+    GLLang language,
+    const GlExtensions *extensions,
+    GLSLCrossDependencyData* dependencies,
+    HLSLccSamplerPrecisionInfo& samplerPrecisions,
+    HLSLccReflection& reflectionCallbacks,
+    GLSLShader* result
+);
 
 HLSLCC_API int HLSLCC_APIENTRY TranslateHLSLFromMem(const char* shader,
-                                                    unsigned int flags,
-                                                    GLLang language,
-													const GlExtensions *extensions,
-                                                    GLSLCrossDependencyData* dependencies,
-													HLSLccSamplerPrecisionInfo& samplerPrecisions,
-													HLSLccReflection& reflectionCallbacks,
-                                                    GLSLShader* result);
+    unsigned int flags,
+    GLLang language,
+    const GlExtensions *extensions,
+    GLSLCrossDependencyData* dependencies,
+    HLSLccSamplerPrecisionInfo& samplerPrecisions,
+    HLSLccReflection& reflectionCallbacks,
+    GLSLShader* result);
 
 #ifdef __cplusplus
 }
 #endif
 
 #endif
-
