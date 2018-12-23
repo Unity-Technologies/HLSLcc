@@ -516,7 +516,6 @@ void ToMetal::HandleOutputRedirect(const Declaration *psDecl, const std::string 
     if (needsRedirect == 1)
     {
         // TODO What if this is indexed?
-        ShaderPhase *psPhase = &psShader->asPhases[psContext->currentPhase];
         int comp = 0;
         uint32_t origMask = psOperand->ui32CompMask;
 
@@ -606,7 +605,6 @@ void ToMetal::HandleInputRedirect(const Declaration *psDecl, const std::string &
     if (needsRedirect == 1)
     {
         // TODO What if this is indexed?
-        ShaderPhase *psPhase = &psShader->asPhases[psContext->currentPhase];
         int needsLooping = 0;
         int i = 0;
         uint32_t origArraySize = 0;

@@ -482,10 +482,6 @@ void ToGLSL::CallBinaryOp(const char* name, Instruction* psInst,
     uint32_t src1SwizCount = psInst->asOperands[src1].GetNumSwizzleElements(destMask);
     uint32_t src0SwizCount = psInst->asOperands[src0].GetNumSwizzleElements(destMask);
     uint32_t dstSwizCount = psInst->asOperands[dest].GetNumSwizzleElements();
-    uint32_t src0AccessMask = psInst->asOperands[src0].GetAccessMask();
-    uint32_t src1AccessMask = psInst->asOperands[src1].GetAccessMask();
-    uint32_t src0AccessCount = GetNumberBitsSet(src0AccessMask);
-    uint32_t src1AccessCount = GetNumberBitsSet(src1AccessMask);
     int needsParenthesis = 0;
 
     if (!HaveNativeBitwiseOps(psContext->psShader->eTargetLanguage))

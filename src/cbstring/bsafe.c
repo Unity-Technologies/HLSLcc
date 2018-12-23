@@ -18,9 +18,9 @@
 #include <stdlib.h>
 #include "bsafe.h"
 
+#if 0
 static int bsafeShouldExit = 1;
 
-#if 0
 char * strcpy(char *dst, const char *src);
 char * strcat(char *dst, const char *src);
 

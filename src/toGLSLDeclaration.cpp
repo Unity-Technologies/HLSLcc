@@ -462,7 +462,6 @@ void ToGLSL::HandleOutputRedirect(const Declaration *psDecl, const char *Precisi
     if (needsRedirect == 1)
     {
         // TODO What if this is indexed?
-        ShaderPhase *psPhase = &psShader->asPhases[psContext->currentPhase];
         int comp = 0;
         uint32_t origMask = psOperand->ui32CompMask;
 
@@ -1524,7 +1523,6 @@ void ToGLSL::HandleInputRedirect(const Declaration *psDecl, const char *Precisio
     if (needsRedirect == 1)
     {
         // TODO What if this is indexed?
-        ShaderPhase *psPhase = &psShader->asPhases[psContext->currentPhase];
         int needsLooping = 0;
         int i = 0;
         uint32_t origArraySize = 0;
