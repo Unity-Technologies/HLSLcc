@@ -3439,6 +3439,7 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
                     int hardcoded_iteration_limit = (psContext->psShader->eShaderType == PIXEL_SHADER) ? 0x7FFF : 0x7FFFFFFF;
 
                     bformata(glsl, "for(int %s = 0 ; %s < 0x%X ; %s++){\n", name->data, name->data, hardcoded_iteration_limit, name->data);
+                    bdestroy(name);
                 }
                 else
                 {

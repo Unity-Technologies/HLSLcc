@@ -701,24 +701,31 @@ void ToGLSL::AddUserOutput(const Declaration* psDecl)
                                             renderTarget = 0;
                                             index = 1;
                                         }
+                                        bdestroy(layoutQualifier);
                                         layoutQualifier = bformat("layout(location = %d, index = %d) ", renderTarget, index);
                                     }
                                     else
                                     {
+                                        bdestroy(layoutQualifier);
                                         layoutQualifier = bformat("layout(location = %d) ", renderTarget);
                                     }
                                 }
 
+                                auto lq = bstr2cstr(layoutQualifier, '\0');
+
                                 if (haveFramebufferFetch)
                                 {
                                     bcatcstr(glsl, "#ifdef GL_EXT_shader_framebuffer_fetch\n");
-                                    bformata(glsl, "%sinout %s%s %s;\n", bstr2cstr(layoutQualifier, '\0'), Precision, type->data, OutputName);
+                                    bformata(glsl, "%sinout %s%s %s;\n", lq, Precision, type->data, OutputName);
                                     bcatcstr(glsl, "#else\n");
-                                    bformata(glsl, "%sout %s%s %s;\n", bstr2cstr(layoutQualifier, '\0'), Precision, type->data, OutputName);
+                                    bformata(glsl, "%sout %s%s %s;\n", lq, Precision, type->data, OutputName);
                                     bcatcstr(glsl, "#endif\n");
                                 }
                                 else
-                                    bformata(glsl, "%sout %s%s %s;\n", bstr2cstr(layoutQualifier, '\0'), Precision, type->data, OutputName);
+                                    bformata(glsl, "%sout %s%s %s;\n", lq, Precision, type->data, OutputName);
+
+                                bcstrfree(lq);
+                                bdestroy(layoutQualifier);
                             }
                         }
                         break;
@@ -2182,24 +2189,31 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
                                     renderTarget = 0;
                                     index = 1;
                                 }
+                                bdestroy(layoutQualifier);
                                 layoutQualifier = bformat("layout(location = %d, index = %d) ", renderTarget, index);
                             }
                             else
                             {
+                                bdestroy(layoutQualifier);
                                 layoutQualifier = bformat("layout(location = %d) ", renderTarget);
                             }
                         }
 
+                        auto lq = bstr2cstr(layoutQualifier, '\0');
+
                         if (haveFramebufferFetch)
                         {
                             bcatcstr(glsl, "#ifdef GL_EXT_shader_framebuffer_fetch\n");
-                            bformata(glsl, "%sinout %s %s %s;\n", bstr2cstr(layoutQualifier, '\0'), Precision, type->data, OutputName);
+                            bformata(glsl, "%sinout %s %s %s;\n", lq, Precision, type->data, OutputName);
                             bcatcstr(glsl, "#else\n");
-                            bformata(glsl, "%sout %s %s %s;\n", bstr2cstr(layoutQualifier, '\0'), Precision, type->data, OutputName);
+                            bformata(glsl, "%sout %s %s %s;\n", lq, Precision, type->data, OutputName);
                             bcatcstr(glsl, "#endif\n");
                         }
                         else
-                            bformata(glsl, "%sout %s %s %s;\n", bstr2cstr(layoutQualifier, '\0'), Precision, type->data, OutputName);
+                            bformata(glsl, "%sout %s %s %s;\n", lq, Precision, type->data, OutputName);
+
+                        bcstrfree(lq);
+                        bdestroy(layoutQualifier);
                     }
                 }
                 break;
