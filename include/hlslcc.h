@@ -425,6 +425,7 @@ public:
     }
 
     MemberDefinitions m_SharedFunctionMembers;
+    std::vector<std::string> m_SharedDependencies;
     BindingSlotAllocator m_SharedTextureSlots, m_SharedSamplerSlots;
     BindingSlotAllocator m_SharedBufferSlots;
 
@@ -439,6 +440,7 @@ public:
         m_NextSpecID = kArraySizeConstantID + 1;
         m_SpecConstantMap.clear();
         m_SharedFunctionMembers.clear();
+        m_SharedDependencies.clear();
     }
 
     // Retrieve or allocate a layout slot for Vulkan specialization constant
@@ -481,7 +483,7 @@ public:
     virtual bool OnConstantBuffer(const std::string &name, size_t bufferSize, size_t memberCount) { return true; }
 
     // Returns false if this constant var is not needed for this shader. See above.
-    virtual bool OnConstant(const std::string &name, int bindIndex, SHADER_VARIABLE_TYPE cType, int rows, int cols, bool isMatrix, int arraySize) { return true; }
+    virtual bool OnConstant(const std::string &name, int bindIndex, SHADER_VARIABLE_TYPE cType, int rows, int cols, bool isMatrix, int arraySize, bool isUsed) { return true; }
 
     virtual void OnConstantBufferBinding(const std::string &name, int bindIndex) {}
     virtual void OnTextureBinding(const std::string &name, int bindIndex, int samplerIndex, bool multisampled, HLSLCC_TEX_DIMENSION dim, bool isUAV) {}

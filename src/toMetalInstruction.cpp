@@ -244,7 +244,7 @@ void ToMetal::AddComparison(Instruction* psInst, ComparisonType eType,
         glsl << TranslateOperand(&psInst->asOperands[2], typeFlag, destMask);
         if (!isBoolDest)
         {
-            bcatcstr(glsl, ") ? 0xFFFFFFFFu : 0u");
+            bcatcstr(glsl, ") ? 0xFFFFFFFFu : uint(0)");
         }
         AddAssignPrologue(needsParenthesis);
     }
@@ -334,7 +334,7 @@ void ToMetal::AddMOVCBinaryOp(const Operand *pDest, const Operand *src0, Operand
         else
         {
             if (s0Type == SVT_UINT || s0Type == SVT_UINT16)
-                bcatcstr(glsl, " != 0u) ? ");
+                bcatcstr(glsl, " != uint(0)) ? ");
             else if (s0Type == SVT_BOOL)
                 bcatcstr(glsl, ") ? ");
             else
@@ -358,13 +358,18 @@ void ToMetal::AddMOVCBinaryOp(const Operand *pDest, const Operand *src0, Operand
     {
         // TODO: We can actually do this in one op using mix().
         int srcElem = -1;
+        SHADER_VARIABLE_TYPE dstType = pDest->GetDataType(psContext);
         SHADER_VARIABLE_TYPE s0Type = src0->GetDataType(psContext);
 
         // Use an extra temp if dest is also one of the sources. Without this some swizzle combinations
         // might alter the source before all components are handled.
-        const char* tempName = "hlslcc_movcTemp";
-        bool dstIsSrc1 = (pDest->eType == src1->eType) && (pDest->ui32RegisterNumber == src1->ui32RegisterNumber);
-        bool dstIsSrc2 = (pDest->eType == src2->eType) && (pDest->ui32RegisterNumber == src2->ui32RegisterNumber);
+        const std::string tempName = "hlslcc_movcTemp";
+        bool dstIsSrc1 = (pDest->eType == src1->eType)
+            && (dstType == src1->GetDataType(psContext))
+            && (pDest->ui32RegisterNumber == src1->ui32RegisterNumber);
+        bool dstIsSrc2 = (pDest->eType == src2->eType)
+            && (dstType == src2->GetDataType(psContext))
+            && (pDest->ui32RegisterNumber == src2->ui32RegisterNumber);
 
         if (dstIsSrc1 || dstIsSrc2)
         {
@@ -375,7 +380,10 @@ void ToMetal::AddMOVCBinaryOp(const Operand *pDest, const Operand *src0, Operand
             int numComponents = (pDest->eType == OPERAND_TYPE_TEMP) ?
                 psContext->psShader->GetTempComponentCount(eDestType, pDest->ui32RegisterNumber) :
                 pDest->iNumComponents;
-            bformata(glsl, "%s %s = %s;\n", HLSLcc::GetConstructorForType(psContext, eDestType, numComponents), tempName, TranslateOperand(pDest, TO_FLAG_NAME_ONLY).c_str());
+            bformata(glsl, "%s %s = %s;\n", HLSLcc::GetConstructorForType(psContext, eDestType, numComponents), tempName.c_str(), TranslateOperand(pDest, TO_FLAG_NAME_ONLY).c_str());
+
+            // Override OPERAND_TYPE_TEMP name temporarily
+            const_cast<Operand *>(pDest)->specialName.assign(tempName);
         }
 
         for (destElem = 0; destElem < 4; ++destElem)
@@ -408,23 +416,20 @@ void ToMetal::AddMOVCBinaryOp(const Operand *pDest, const Operand *src0, Operand
                 }
             }
 
-            if (!dstIsSrc1)
-                glsl << TranslateOperand(src1, SVTTypeToFlag(eDestType), 1 << srcElem);
-            else
-                bformata(glsl, "%s%s", tempName, TranslateOperandSwizzle(src1, 1 << srcElem, 0).c_str());
-
+            glsl << TranslateOperand(src1, SVTTypeToFlag(eDestType), 1 << srcElem);
             bcatcstr(glsl, " : ");
-
-            if (!dstIsSrc2)
-                glsl << TranslateOperand(src2, SVTTypeToFlag(eDestType), 1 << srcElem);
-            else
-                bformata(glsl, "%s%s", tempName, TranslateOperandSwizzle(src2, 1 << srcElem, 0).c_str());
-
+            glsl << TranslateOperand(src2, SVTTypeToFlag(eDestType), 1 << srcElem);
             AddAssignPrologue(numParenthesis);
         }
 
         if (dstIsSrc1 || dstIsSrc2)
         {
+            const_cast<Operand *>(pDest)->specialName.clear();
+
+            psContext->AddIndentation();
+            glsl << TranslateOperand(pDest, TO_FLAG_NAME_ONLY);
+            bformata(glsl, " = %s;\n", tempName.c_str());
+
             --psContext->indent;
             psContext->AddIndentation();
             bcatcstr(glsl, "}\n");
@@ -967,7 +972,7 @@ void ToMetal::GetResInfoData(Instruction* psInst, int index, int destElem)
     int dim = GetNumTextureDimensions(psInst->eResDim);
     if (dim < (index + 1) && index != 3)
     {
-        bcatcstr(glsl, eResInfoReturnType == RESINFO_INSTRUCTION_RETURN_UINT ? "0u" : "0.0");
+        bcatcstr(glsl, eResInfoReturnType == RESINFO_INSTRUCTION_RETURN_UINT ? "uint(0)" : "0.0");
     }
     else
     {
@@ -1892,7 +1897,7 @@ void ToMetal::TranslateConditional(
     }
     else if (psInst->eOpcode == OPCODE_RETC) // FIXME! Need to spew out shader epilogue
     {
-        if (psContext->psShader->eShaderType == COMPUTE_SHADER)
+        if (psContext->psShader->eShaderType == COMPUTE_SHADER || (psContext->psShader->eShaderType == PIXEL_SHADER && m_StructDefinitions[GetOutputStructName()].m_Members.size() == 0))
             statement = "return";
         else
             statement = "return output";
@@ -1925,11 +1930,11 @@ void ToMetal::TranslateConditional(
 
             if (psInst->eOpcode != OPCODE_IF)
             {
-                bformata(glsl, ")==uint(0u)){%s;}\n", statement);
+                bformata(glsl, ")==uint(0)){%s;}\n", statement);
             }
             else
             {
-                bcatcstr(glsl, ")==uint(0u)){\n");
+                bcatcstr(glsl, ")==uint(0)){\n");
             }
         }
         else
@@ -1940,11 +1945,11 @@ void ToMetal::TranslateConditional(
 
             if (psInst->eOpcode != OPCODE_IF)
             {
-                bformata(glsl, ")!=uint(0u)){%s;}\n", statement);
+                bformata(glsl, ")!=uint(0)){%s;}\n", statement);
             }
             else
             {
-                bcatcstr(glsl, ")!=uint(0u)){\n");
+                bcatcstr(glsl, ")!=uint(0)){\n");
             }
         }
     }
@@ -2774,7 +2779,7 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
 #endif
             }
             psContext->AddIndentation();
-            if (psContext->psShader->eShaderType == COMPUTE_SHADER)
+            if (psContext->psShader->eShaderType == COMPUTE_SHADER || (psContext->psShader->eShaderType == PIXEL_SHADER && m_StructDefinitions[GetOutputStructName()].m_Members.size() == 0))
                 bcatcstr(glsl, "return;\n");
             else
                 bcatcstr(glsl, "return output;\n");
@@ -3589,15 +3594,26 @@ template <int N> vec<int, N> bitFieldExtractI(const vec<uint, N> width, const ve
             psContext->AddIndentation();
 
             uint32_t destMask = psInst->asOperands[0].GetAccessMask();
+            uint32_t src2SwizCount = psInst->asOperands[3].GetNumSwizzleElements(destMask);
+            uint32_t src1SwizCount = psInst->asOperands[2].GetNumSwizzleElements(destMask);
+            uint32_t src0SwizCount = psInst->asOperands[1].GetNumSwizzleElements(destMask);
+            uint32_t ui32Flags = 0;
+
+            if (src1SwizCount != src0SwizCount || src2SwizCount != src0SwizCount)
+            {
+                uint32_t maxElems = std::max(src2SwizCount, std::max(src1SwizCount, src0SwizCount));
+                ui32Flags |= (TO_AUTO_EXPAND_TO_VEC2 << (maxElems - 2));
+            }
+
             AddAssignToDest(&psInst->asOperands[0], isUBFE ? SVT_UINT : SVT_INT, psInst->asOperands[0].GetNumSwizzleElements(), &numParenthesis);
             bcatcstr(glsl, "bitFieldExtract");
             bcatcstr(glsl, isUBFE ? "U" : "I");
             bcatcstr(glsl, "(");
-            glsl << TranslateOperand(&psInst->asOperands[1], TO_FLAG_UNSIGNED_INTEGER, destMask);
+            glsl << TranslateOperand(&psInst->asOperands[1], ui32Flags | TO_FLAG_UNSIGNED_INTEGER, destMask);
             bcatcstr(glsl, ", ");
-            glsl << TranslateOperand(&psInst->asOperands[2], TO_FLAG_UNSIGNED_INTEGER, destMask);
+            glsl << TranslateOperand(&psInst->asOperands[2], ui32Flags | TO_FLAG_UNSIGNED_INTEGER, destMask);
             bcatcstr(glsl, ", ");
-            glsl << TranslateOperand(&psInst->asOperands[3], isUBFE ? TO_FLAG_UNSIGNED_INTEGER : TO_FLAG_INTEGER, destMask);
+            glsl << TranslateOperand(&psInst->asOperands[3], ui32Flags | (isUBFE ? TO_FLAG_UNSIGNED_INTEGER : TO_FLAG_INTEGER), destMask);
             bcatcstr(glsl, ")");
             AddAssignPrologue(numParenthesis);
             break;

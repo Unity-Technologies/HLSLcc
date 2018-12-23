@@ -122,6 +122,7 @@ private:
 
     // A <function name, body text> map of extra helper functions we'll need.
     FunctionDefinitions m_FunctionDefinitions;
+    std::vector<std::string> m_FunctionDefinitionsOrder;
 
     std::set<uint32_t> m_DeclaredRenderTarget;
     int m_NumDeclaredWhileTrueLoops;

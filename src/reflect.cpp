@@ -192,7 +192,7 @@ static void ReadPatchConstantSignatures(const uint32_t* pui32Tokens,
     }
 }
 
-static const uint32_t* ReadResourceBinding(const uint32_t* pui32FirstResourceToken, const uint32_t* pui32Tokens, ResourceBinding* psBinding, uint32_t decodeFlags)
+static const uint32_t* ReadResourceBinding(ShaderInfo* psShaderInfo, const uint32_t* pui32FirstResourceToken, const uint32_t* pui32Tokens, ResourceBinding* psBinding, uint32_t decodeFlags)
 {
     uint32_t ui32NameOffset = *pui32Tokens++;
 
@@ -202,10 +202,17 @@ static const uint32_t* ReadResourceBinding(const uint32_t* pui32FirstResourceTok
     psBinding->eType = (ResourceType) * pui32Tokens++;
     psBinding->ui32ReturnType = (RESOURCE_RETURN_TYPE)*pui32Tokens++;
     psBinding->eDimension = (REFLECT_RESOURCE_DIMENSION)*pui32Tokens++;
-    psBinding->ui32NumSamples = *pui32Tokens++;
+    psBinding->ui32NumSamples = *pui32Tokens++; // fxc generates 2^32 - 1 for non MS images
     psBinding->ui32BindPoint = *pui32Tokens++;
     psBinding->ui32BindCount = *pui32Tokens++;
     psBinding->ui32Flags = *pui32Tokens++;
+    if (((psShaderInfo->ui32MajorVersion >= 5) && (psShaderInfo->ui32MinorVersion >= 1)) ||
+        (psShaderInfo->ui32MajorVersion > 5))
+    {
+        psBinding->ui32Space = *pui32Tokens++;
+        psBinding->ui32RangeID = *pui32Tokens++;
+    }
+
     psBinding->ePrecision = REFLECT_RESOURCE_PRECISION_UNKNOWN;
 
     if (decodeFlags & HLSLCC_FLAG_SAMPLER_PRECISION_ENCODED_IN_NAME)
@@ -337,9 +344,9 @@ static const uint32_t* ReadConstantBuffer(ShaderInfo* psShaderInfo,
         if (psShaderInfo->ui32MajorVersion  >= 5)
         {
             /*uint32_t StartTexture = * */ pui32VarToken++;
-            /*uint32_t TextureSize = *  */pui32VarToken++;
+            /*uint32_t TextureSize = *  */ pui32VarToken++;
             /*uint32_t StartSampler = * */ pui32VarToken++;
-            /*uint32_t SamplerSize = *  */pui32VarToken++;
+            /*uint32_t SamplerSize = *  */ pui32VarToken++;
         }
 
         psVar->haveDefaultValue = 0;
@@ -407,7 +414,7 @@ static void ReadResources(const uint32_t* pui32Tokens,//in
 
     for (i = 0; i < ui32NumResourceBindings; ++i)
     {
-        pui32ResourceBindings = ReadResourceBinding(pui32FirstToken, pui32ResourceBindings, psResBindings + i, decodeFlags);
+        pui32ResourceBindings = ReadResourceBinding(psShaderInfo, pui32FirstToken, pui32ResourceBindings, psResBindings + i, decodeFlags);
         ASSERT(psResBindings[i].ui32BindPoint < MAX_RESOURCE_BINDINGS);
     }
 

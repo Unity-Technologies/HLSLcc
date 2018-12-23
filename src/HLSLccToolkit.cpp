@@ -494,4 +494,40 @@ namespace HLSLcc
         if (ePos < 0 && pointPos < 0 && !fpcheck(f))
             bcatcstr(b, ".0");
     }
+
+    bstring GetEarlyMain(HLSLCrossCompilerContext *psContext)
+    {
+        bstring *oldString = psContext->currentGLSLString;
+        bstring *str = &psContext->psShader->asPhases[psContext->currentPhase].earlyMain;
+        int indent = psContext->indent;
+
+        if (psContext->psShader->eTargetLanguage == LANG_METAL && !psContext->indent)
+            ++psContext->indent;
+
+        psContext->currentGLSLString = str;
+        psContext->AddIndentation();
+        psContext->currentGLSLString = oldString;
+        psContext->indent = indent;
+
+        return *str;
+    }
+
+    bstring GetPostShaderCode(HLSLCrossCompilerContext *psContext)
+    {
+        bstring *oldString = psContext->currentGLSLString;
+        bstring *str = &psContext->psShader->asPhases[psContext->currentPhase].postShaderCode;
+        int indent = psContext->indent;
+
+        if (psContext->psShader->eTargetLanguage == LANG_METAL && !psContext->indent)
+            ++psContext->indent;
+
+        psContext->psShader->asPhases[psContext->currentPhase].hasPostShaderCode = 1;
+
+        psContext->currentGLSLString = str;
+        psContext->AddIndentation();
+        psContext->currentGLSLString = oldString;
+        psContext->indent = indent;
+
+        return *str;
+    }
 }

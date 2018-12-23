@@ -32,6 +32,10 @@ public:
     // Returns true if VULKAN_BINDINGS flag is set
     bool IsVulkan() const;
 
+    // Helper functions for checking flags
+    // Returns true if HLSLCC_FLAG_NVN_TARGET flag is set
+    bool IsSwitch() const;
+
     Shader* psShader;
     GLSLCrossDependencyData* psDependencies;
     const char *inputPrefix; // Prefix for shader inputs

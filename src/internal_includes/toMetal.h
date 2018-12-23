@@ -57,8 +57,8 @@ private:
     void DeclareConstantBuffer(const ConstantBuffer *psCBuf, uint32_t ui32BindingPoint);
     void DeclareStructType(const std::string &name, const std::vector<ShaderVar> &contents, bool withinCB = false, uint32_t cumulativeOffset = 0, bool stripUnused = false);
     void DeclareStructType(const std::string &name, const std::vector<ShaderVarType> &contents, bool withinCB = false, uint32_t cumulativeOffset = 0);
-    void DeclareStructVariable(const std::string &parentName, const ShaderVar &var, bool withinCB = false, uint32_t cumulativeOffset = 0);
-    void DeclareStructVariable(const std::string &parentName, const ShaderVarType &var, bool withinCB = false, uint32_t cumulativeOffset = 0);
+    void DeclareStructVariable(const std::string &parentName, const ShaderVar &var, bool withinCB = false, uint32_t cumulativeOffset = 0, bool isUsed = true);
+    void DeclareStructVariable(const std::string &parentName, const ShaderVarType &var, bool withinCB = false, uint32_t cumulativeOffset = 0, bool isUsed = true);
     void DeclareBufferVariable(const Declaration *psDecl, bool isRaw, bool isUAV);
 
     void DeclareResource(const Declaration *psDecl);

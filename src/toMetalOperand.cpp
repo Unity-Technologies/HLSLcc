@@ -409,11 +409,17 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
         {
             if (CanDoDirectCast(psContext, eType, requestedType))
             {
-                oss << GetConstructorForType(psContext, requestedType, requestedComponents, false) << "(";
-                numParenthesis++;
                 hasCtor = 1;
                 if (eType == SVT_BOOL)
+                {
                     needsBoolUpscale = 1;
+                    // make sure to wrap the whole thing in parens so the upscale
+                    // multiply only applies to the bool
+                    oss << "(";
+                    numParenthesis++;
+                }
+                oss << GetConstructorForType(psContext, requestedType, requestedComponents, false) << "(";
+                numParenthesis++;
             }
             else
             {
@@ -554,6 +560,13 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
         case OPERAND_TYPE_TEMP:
         {
             SHADER_VARIABLE_TYPE eTempType = psOperand->GetDataType(psContext);
+
+            if (psOperand->eSpecialName == NAME_UNDEFINED && psOperand->specialName.length())
+            {
+                oss << psOperand->specialName;
+                break;
+            }
+
             oss << HLSLCC_TEMP_PREFIX;
             ASSERT(psOperand->ui32RegisterNumber < 0x10000); // Sanity check after temp splitting.
             switch (eTempType)
@@ -993,7 +1006,18 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
         }
         case OPERAND_TYPE_INPUT_THREAD_ID_IN_GROUP_FLATTENED://SV_GroupIndex
         {
-            oss << "mtl_ThreadIndexInThreadGroup";
+            if (requestedComponents > 1 && !hasCtor)
+            {
+                oss << GetConstructorForType(psContext, eType, requestedComponents, false) << "(";
+                numParenthesis++;
+                hasCtor = 1;
+            }
+            for (uint32_t i = 0; i < requestedComponents; i++)
+            {
+                oss << "mtl_ThreadIndexInThreadGroup";
+                if (i < requestedComponents - 1)
+                    oss << ", ";
+            }
             *pui32IgnoreSwizzle = 1; // No swizzle meaningful for scalar.
             break;
         }
@@ -1087,42 +1111,45 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
                     // Not on Metal
                     ASSERT(0);
                     break;
+
+                // as far as i understand tesselation factors are always coming from tessFactor variable (it is always declared in ToMetal::Translate)
                 case NAME_FINAL_QUAD_U_EQ_0_EDGE_TESSFACTOR:
                 case NAME_FINAL_TRI_U_EQ_0_EDGE_TESSFACTOR:
                 case NAME_FINAL_LINE_DENSITY_TESSFACTOR:
                     if (psContext->psShader->aIndexedOutput[1][psOperand->ui32RegisterNumber])
-                        oss << "edgeTessellationFactor";
+                        oss << "tessFactor.edgeTessellationFactor";
                     else
-                        oss << "edgeTessellationFactor[0]";
+                        oss << "tessFactor.edgeTessellationFactor[0]";
                     *pui32IgnoreSwizzle = 1;
                     break;
                 case NAME_FINAL_QUAD_V_EQ_0_EDGE_TESSFACTOR:
                 case NAME_FINAL_TRI_V_EQ_0_EDGE_TESSFACTOR:
                 case NAME_FINAL_LINE_DETAIL_TESSFACTOR:
-                    oss << "edgeTessellationFactor[1]";
+                    oss << "tessFactor.edgeTessellationFactor[1]";
                     *pui32IgnoreSwizzle = 1;
                     break;
                 case NAME_FINAL_QUAD_U_EQ_1_EDGE_TESSFACTOR:
                 case NAME_FINAL_TRI_W_EQ_0_EDGE_TESSFACTOR:
-                    oss << "edgeTessellationFactor[2]";
+                    oss << "tessFactor.edgeTessellationFactor[2]";
                     *pui32IgnoreSwizzle = 1;
                     break;
                 case NAME_FINAL_QUAD_V_EQ_1_EDGE_TESSFACTOR:
-                    oss << "edgeTessellationFactor[3]";
+                    oss << "tessFactor.edgeTessellationFactor[3]";
                     *pui32IgnoreSwizzle = 1;
                     break;
                 case NAME_FINAL_TRI_INSIDE_TESSFACTOR:
                 case NAME_FINAL_QUAD_U_INSIDE_TESSFACTOR:
                     if (psContext->psShader->aIndexedOutput[1][psOperand->ui32RegisterNumber])
-                        oss << "insideTessellationFactor";
+                        oss << "tessFactor.insideTessellationFactor";
                     else
-                        oss << "insideTessellationFactor[0]";
+                        oss << "tessFactor.insideTessellationFactor[0]";
                     *pui32IgnoreSwizzle = 1;
                     break;
                 case NAME_FINAL_QUAD_V_INSIDE_TESSFACTOR:
-                    oss << "insideTessellationFactor[1]";
+                    oss << "tessFactor.insideTessellationFactor[1]";
                     *pui32IgnoreSwizzle = 1;
                     break;
+
                 default:
                     const std::string patchPrefix = "patch.";
 
@@ -1165,6 +1192,9 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
             oss << ") * 0xffffffffu";
         else
             oss << ") * int(0xffffffffu)";
+        numParenthesis--;
+
+        oss << ")";
         numParenthesis--;
     }
 

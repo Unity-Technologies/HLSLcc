@@ -6,6 +6,8 @@
 #include <sstream>
 #include <cmath>
 
+using namespace HLSLcc;
+
 #ifndef fpcheck
 #ifdef _MSC_VER
 #define fpcheck(x) (_isnan(x) || !_finite(x))
@@ -64,7 +66,7 @@ bool ToMetal::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::I
         {
             case NAME_POSITION:
                 if (psContext->psShader->eShaderType == PIXEL_SHADER)
-                    result = "mtl_FragCoord";
+                    result = "hlslcc_FragCoord";
                 else
                     result = "mtl_Position";
                 if (outSkipPrefix != NULL) *outSkipPrefix = true;
@@ -211,11 +213,21 @@ void ToMetal::DeclareBuiltinInput(const Declaration *psDecl)
 {
     const SPECIAL_NAME eSpecialName = psDecl->asOperands[0].eSpecialName;
 
+    Shader* psShader = psContext->psShader;
+    const Operand* psOperand = &psDecl->asOperands[0];
+    const int regSpace = psOperand->GetRegisterSpace(psContext);
+    ASSERT(regSpace == 0);
+
+    // we need to at least mark if they are scalars or not (as we might need to use vector ctor)
+    if (psOperand->GetNumInputElements(psContext) == 1)
+        psShader->abScalarInput[regSpace][psOperand->ui32RegisterNumber] |= (int)psOperand->ui32CompMask;
+
     switch (eSpecialName)
     {
         case NAME_POSITION:
             ASSERT(psContext->psShader->eShaderType == PIXEL_SHADER);
             m_StructDefinitions[""].m_Members.push_back(std::make_pair("mtl_FragCoord", "float4 mtl_FragCoord [[ position ]]"));
+            bcatcstr(GetEarlyMain(psContext), "float4 hlslcc_FragCoord = float4(mtl_FragCoord.xyz, 1.0/mtl_FragCoord.w);\n");
             break;
         case NAME_RENDER_TARGET_ARRAY_INDEX:
             // Only supported on a Mac
@@ -277,7 +289,6 @@ void ToMetal::DeclareClipPlanes(const Declaration* decl, unsigned declCount)
         else if (psFirstClipSignature->ui32Mask & (1 << 1))  compCount = 2;
     }
 
-    ShaderPhase* phase = &shader->asPhases[psContext->currentPhase];
     for (unsigned i = 0, n = declCount; i < n; ++i)
     {
         const Operand* operand = &decl[i].asOperands[0];
@@ -287,22 +298,19 @@ void ToMetal::DeclareClipPlanes(const Declaration* decl, unsigned declCount)
         shader->sInfo.GetOutputSignatureFromRegister(operand->ui32RegisterNumber, operand->ui32CompMask, 0, &signature);
         const int semanticIndex = signature->ui32SemanticIndex;
 
-        bformata(phase->earlyMain, "    float4 phase%d_ClipDistance%d;\n", psContext->currentPhase, signature->ui32SemanticIndex);
+        bformata(GetEarlyMain(psContext), "float4 phase%d_ClipDistance%d;\n", psContext->currentPhase, signature->ui32SemanticIndex);
 
         const char* swizzleStr[] = { "x", "y", "z", "w" };
-        phase->hasPostShaderCode = 1;
         if (planeCount > 1)
         {
             for (int i = 0; i < compCount; ++i)
             {
-                bformata(phase->postShaderCode, "    %s.mtl_ClipDistance[%d] = phase%d_ClipDistance%d.%s;\n",
-                    "output", semanticIndex * compCount + i, psContext->currentPhase, semanticIndex, swizzleStr[i]
-                );
+                bformata(GetPostShaderCode(psContext), "%s.mtl_ClipDistance[%d] = phase%d_ClipDistance%d.%s;\n", "output", semanticIndex * compCount + i, psContext->currentPhase, semanticIndex, swizzleStr[i]);
             }
         }
         else
         {
-            bformata(phase->postShaderCode, "    %s.mtl_ClipDistance = phase%d_ClipDistance%d.x;\n", "output", psContext->currentPhase, semanticIndex);
+            bformata(GetPostShaderCode(psContext), "%s.mtl_ClipDistance = phase%d_ClipDistance%d.x;\n", "output", psContext->currentPhase, semanticIndex);
         }
     }
 }
@@ -311,10 +319,11 @@ void ToMetal::GenerateTexturesReflection(HLSLccReflection* refl)
 {
     for (unsigned i = 0, n = m_Textures.size(); i < n; ++i)
     {
-        const std::string samplerName1 = m_Textures[i].name, samplerName2 = "sampler" + m_Textures[i].name;
+        // Match CheckSamplerAndTextureNameMatch behavior
+        const std::string samplerName1 = m_Textures[i].name, samplerName2 = "sampler" + m_Textures[i].name, samplerName3 = "sampler_" + m_Textures[i].name;
         for (unsigned j = 0, m = m_Samplers.size(); j < m; ++j)
         {
-            if (m_Samplers[j].name == samplerName1 || m_Samplers[j].name == samplerName2)
+            if (m_Samplers[j].name == samplerName1 || m_Samplers[j].name == samplerName2 || m_Samplers[j].name == samplerName3)
             {
                 m_Textures[i].samplerBind = m_Samplers[j].slot;
                 break;
@@ -513,11 +522,7 @@ void ToMetal::HandleOutputRedirect(const Declaration *psDecl, const std::string 
 
         ASSERT(psContext->psShader->aIndexedOutput[regSpace][psOperand->ui32RegisterNumber] == 0);
 
-        psContext->AddIndentation();
-        bformata(psPhase->earlyMain, "%s phase%d_Output%d_%d;\n", typeName.c_str(), psContext->currentPhase, regSpace, psOperand->ui32RegisterNumber);
-
-        psPhase->hasPostShaderCode = 1;
-        psContext->currentGLSLString = &psPhase->postShaderCode;
+        bformata(GetEarlyMain(psContext), "%s phase%d_Output%d_%d;\n", typeName.c_str(), psContext->currentPhase, regSpace, psOperand->ui32RegisterNumber);
 
         while (comp < 4)
         {
@@ -541,38 +546,35 @@ void ToMetal::HandleOutputRedirect(const Declaration *psDecl, const std::string 
             mask = psSig->ui32Mask;
 
             ((Operand *)psOperand)->ui32CompMask = 1 << comp;
-            psContext->AddIndentation();
-            bcatcstr(psPhase->postShaderCode, TranslateOperand(psOperand, TO_FLAG_NAME_ONLY).c_str());
-
-            bcatcstr(psPhase->postShaderCode, " = ");
+            bstring str = GetPostShaderCode(psContext);
+            bcatcstr(str, TranslateOperand(psOperand, TO_FLAG_NAME_ONLY).c_str());
+            bcatcstr(str, " = ");
 
             if (psSig->eComponentType == INOUT_COMPONENT_SINT32)
             {
-                bformata(psPhase->postShaderCode, "as_type<int>(");
+                bformata(str, "as_type<int>(");
                 hasCast = 1;
             }
             else if (psSig->eComponentType == INOUT_COMPONENT_UINT32)
             {
-                bformata(psPhase->postShaderCode, "as_type<uint>(");
+                bformata(str, "as_type<uint>(");
                 hasCast = 1;
             }
-            bformata(psPhase->postShaderCode, "phase%d_Output%d_%d.", psContext->currentPhase, regSpace, psOperand->ui32RegisterNumber);
+            bformata(str, "phase%d_Output%d_%d.", psContext->currentPhase, regSpace, psOperand->ui32RegisterNumber);
             // Print out mask
             for (i = 0; i < 4; i++)
             {
                 if ((mask & (1 << i)) == 0)
                     continue;
 
-                bformata(psPhase->postShaderCode, "%c", "xyzw"[i]);
+                bformata(str, "%c", "xyzw"[i]);
             }
 
             if (hasCast)
-                bcatcstr(psPhase->postShaderCode, ")");
+                bcatcstr(str, ")");
             comp += numComps;
-            bcatcstr(psPhase->postShaderCode, ";\n");
+            bcatcstr(str, ";\n");
         }
-
-        psContext->currentGLSLString = &psContext->glsl;
 
         ((Operand *)psOperand)->ui32CompMask = origMask;
         if (regSpace == 0)
@@ -612,33 +614,31 @@ void ToMetal::HandleInputRedirect(const Declaration *psDecl, const std::string &
 
         ASSERT(psContext->psShader->aIndexedInput[regSpace][psOperand->ui32RegisterNumber] == 0);
 
-        psContext->currentGLSLString = &psPhase->earlyMain;
-        psContext->AddIndentation();
+        ++psContext->indent;
 
-        bcatcstr(psPhase->earlyMain, "    ");
         // Does the input have multiple array components (such as geometry shader input, or domain shader control point input)
         if ((psShader->eShaderType == DOMAIN_SHADER && regSpace == 0) || (psShader->eShaderType == GEOMETRY_SHADER))
         {
             // The count is actually stored in psOperand->aui32ArraySizes[0]
             origArraySize = psOperand->aui32ArraySizes[0];
             // bformata(glsl, "%s vec4 phase%d_Input%d_%d[%d];\n", Precision, psContext->currentPhase, regSpace, psOperand->ui32RegisterNumber, origArraySize);
-            bformata(psPhase->earlyMain, "%s phase%d_Input%d_%d[%d];\n", typeName.c_str(), psContext->currentPhase, regSpace, psOperand->ui32RegisterNumber, origArraySize);
+            bformata(GetEarlyMain(psContext), "%s phase%d_Input%d_%d[%d];\n", typeName.c_str(), psContext->currentPhase, regSpace, psOperand->ui32RegisterNumber, origArraySize);
             needsLooping = 1;
             i = origArraySize - 1;
         }
         else
             // bformata(glsl, "%s vec4 phase%d_Input%d_%d;\n", Precision, psContext->currentPhase, regSpace, psOperand->ui32RegisterNumber);
-            bformata(psPhase->earlyMain, "%s phase%d_Input%d_%d;\n", typeName.c_str(), psContext->currentPhase, regSpace, psOperand->ui32RegisterNumber);
+            bformata(GetEarlyMain(psContext), "%s phase%d_Input%d_%d;\n", typeName.c_str(), psContext->currentPhase, regSpace, psOperand->ui32RegisterNumber);
 
         // Do a conditional loop. In normal cases needsLooping == 0 so this is only run once.
         do
         {
             int comp = 0;
-            bcatcstr(psPhase->earlyMain, "    ");
+            bstring str = GetEarlyMain(psContext);
             if (needsLooping)
-                bformata(psPhase->earlyMain, "phase%d_Input%d_%d[%d] = %s(", psContext->currentPhase, regSpace, psOperand->ui32RegisterNumber, i, typeName.c_str());
+                bformata(str, "phase%d_Input%d_%d[%d] = %s(", psContext->currentPhase, regSpace, psOperand->ui32RegisterNumber, i, typeName.c_str());
             else
-                bformata(psPhase->earlyMain, "phase%d_Input%d_%d = %s(", psContext->currentPhase, regSpace, psOperand->ui32RegisterNumber, typeName.c_str());
+                bformata(str, "phase%d_Input%d_%d = %s(", psContext->currentPhase, regSpace, psOperand->ui32RegisterNumber, typeName.c_str());
 
             while (comp < 4)
             {
@@ -656,9 +656,9 @@ void ToMetal::HandleInputRedirect(const Declaration *psDecl, const std::string &
                     if (psSig->eComponentType != INOUT_COMPONENT_FLOAT32)
                     {
                         if (numComps > 1)
-                            bformata(psPhase->earlyMain, "as_type<float%d>(", numComps);
+                            bformata(str, "as_type<float%d>(", numComps);
                         else
-                            bformata(psPhase->earlyMain, "as_type<float>(");
+                            bformata(str, "as_type<float>(");
                         hasCast = 1;
                     }
 
@@ -669,7 +669,7 @@ void ToMetal::HandleInputRedirect(const Declaration *psDecl, const std::string &
                     // And the component mask
                     psOperand->ui32CompMask = 1 << comp;
 
-                    bformata(psPhase->earlyMain, TranslateOperand(psOperand, TO_FLAG_NAME_ONLY).c_str());
+                    bformata(str, TranslateOperand(psOperand, TO_FLAG_NAME_ONLY).c_str());
 
                     // Restore the original array size value and mask
                     psOperand->ui32CompMask = origMask;
@@ -677,23 +677,23 @@ void ToMetal::HandleInputRedirect(const Declaration *psDecl, const std::string &
                         psOperand->aui32ArraySizes[0] = origArraySize;
 
                     if (hasCast)
-                        bcatcstr(psPhase->earlyMain, ")");
+                        bcatcstr(str, ")");
                     comp += numComps;
                 }
                 else // no signature found -> fill with zero
                 {
-                    bcatcstr(psPhase->earlyMain, "0");
+                    bcatcstr(str, "0");
                     comp++;
                 }
 
                 if (comp < 4)
-                    bcatcstr(psPhase->earlyMain, ", ");
+                    bcatcstr(str, ", ");
             }
-            bcatcstr(psPhase->earlyMain, ");\n");
+            bcatcstr(str, ");\n");
         }
         while ((--i) >= 0);
 
-        psContext->currentGLSLString = &psContext->glsl;
+        --psContext->indent;
 
         if (regSpace == 0)
             psShader->asPhases[psContext->currentPhase].acInputNeedsRedirect[psOperand->ui32RegisterNumber] = 0xfe;
@@ -894,16 +894,19 @@ static std::string GetInterpolationString(INTERPOLATION_MODE eMode)
     }
 }
 
-void ToMetal::DeclareStructVariable(const std::string &parentName, const ShaderVar &var, bool withinCB, uint32_t cumulativeOffset)
+void ToMetal::DeclareStructVariable(const std::string &parentName, const ShaderVar &var, bool withinCB, uint32_t cumulativeOffset, bool isUsed)
 {
-    DeclareStructVariable(parentName, var.sType, withinCB, cumulativeOffset + var.ui32StartOffset);
+    DeclareStructVariable(parentName, var.sType, withinCB, cumulativeOffset + var.ui32StartOffset, isUsed);
 }
 
-void ToMetal::DeclareStructVariable(const std::string &parentName, const ShaderVarType &var, bool withinCB, uint32_t cumulativeOffset)
+void ToMetal::DeclareStructVariable(const std::string &parentName, const ShaderVarType &var, bool withinCB, uint32_t cumulativeOffset, bool isUsed)
 {
     // CB arrays need to be defined as 4 component vectors to match DX11 data layout
     bool arrayWithinCB = (withinCB && (var.Elements > 1) && (psContext->psShader->eShaderType == COMPUTE_SHADER));
     bool doDeclare = true;
+
+    if (isUsed == false && ((psContext->flags & HLSLCC_FLAG_REMOVE_UNUSED_GLOBALS)) == 0)
+        isUsed = true;
 
     if (var.Class == SVC_STRUCT)
     {
@@ -914,7 +917,7 @@ void ToMetal::DeclareStructVariable(const std::string &parentName, const ShaderV
         if (var.Parent == NULL && var.Elements > 1 && withinCB)
         {
             // var.Type being SVT_VOID indicates it is a struct in this case.
-            psContext->m_Reflection.OnConstant(var.fullName, var.Offset + cumulativeOffset, var.Type, var.Rows, var.Columns, false, var.Elements);
+            psContext->m_Reflection.OnConstant(var.fullName, var.Offset + cumulativeOffset, var.Type, var.Rows, var.Columns, false, var.Elements, true);
         }
 
         std::ostringstream oss;
@@ -950,9 +953,9 @@ void ToMetal::DeclareStructVariable(const std::string &parentName, const ShaderV
                 // On non-compute we can fake that we still have a matrix, as CB upload code will fill the data correctly on 4x4 matrices.
                 // That way we avoid the issues with mismatching types for builtins etc.
                 if (psContext->psShader->eShaderType == COMPUTE_SHADER)
-                    doDeclare = psContext->m_Reflection.OnConstant(var.fullName, var.Offset + cumulativeOffset, var.Type, 1, 4, false, elemCount);
+                    doDeclare = psContext->m_Reflection.OnConstant(var.fullName, var.Offset + cumulativeOffset, var.Type, 1, 4, false, elemCount, isUsed);
                 else
-                    doDeclare = psContext->m_Reflection.OnConstant(var.fullName, var.Offset + cumulativeOffset, var.Type, var.Rows, var.Columns, true, var.Elements);
+                    doDeclare = psContext->m_Reflection.OnConstant(var.fullName, var.Offset + cumulativeOffset, var.Type, var.Rows, var.Columns, true, var.Elements, isUsed);
             }
         }
         else
@@ -966,7 +969,7 @@ void ToMetal::DeclareStructVariable(const std::string &parentName, const ShaderV
 
             // TODO Verify whether the offset is from the beginning of the CB or from the beginning of the struct
             if (withinCB)
-                doDeclare = psContext->m_Reflection.OnConstant(var.fullName, var.Offset + cumulativeOffset, var.Type, var.Rows, var.Columns, true, var.Elements);
+                doDeclare = psContext->m_Reflection.OnConstant(var.fullName, var.Offset + cumulativeOffset, var.Type, var.Rows, var.Columns, true, var.Elements, isUsed);
         }
 
         if (doDeclare)
@@ -983,7 +986,7 @@ void ToMetal::DeclareStructVariable(const std::string &parentName, const ShaderV
         }
 
         if (withinCB)
-            doDeclare = psContext->m_Reflection.OnConstant(var.fullName, var.Offset + cumulativeOffset, var.Type, 1, var.Columns, false, var.Elements);
+            doDeclare = psContext->m_Reflection.OnConstant(var.fullName, var.Offset + cumulativeOffset, var.Type, 1, var.Columns, false, var.Elements, isUsed);
 
         if (doDeclare)
             m_StructDefinitions[parentName].m_Members.push_back(std::make_pair(var.name, oss.str()));
@@ -1008,7 +1011,7 @@ void ToMetal::DeclareStructVariable(const std::string &parentName, const ShaderV
         }
 
         if (withinCB)
-            doDeclare = psContext->m_Reflection.OnConstant(var.fullName, var.Offset + cumulativeOffset, var.Type, 1, 1, false, var.Elements);
+            doDeclare = psContext->m_Reflection.OnConstant(var.fullName, var.Offset + cumulativeOffset, var.Type, 1, 1, false, var.Elements, isUsed);
 
         if (doDeclare)
             m_StructDefinitions[parentName].m_Members.push_back(std::make_pair(var.name, oss.str()));
@@ -1026,7 +1029,7 @@ void ToMetal::DeclareStructType(const std::string &name, const std::vector<Shade
         if (stripUnused && !itr->sType.m_IsUsed)
             continue;
 
-        DeclareStructVariable(name, *itr, withinCB, cumulativeOffset);
+        DeclareStructVariable(name, *itr, withinCB, cumulativeOffset, itr->sType.m_IsUsed);
     }
 }
 
@@ -1118,23 +1121,18 @@ void ToMetal::DeclareBufferVariable(const Declaration *psDecl, bool isRaw, bool 
 
     // In addition to the actual declaration, we need pointer modification and possible counter declaration
     // in early main:
-    std::ostringstream earlymainoss;
 
     // Possible counter is always in the beginning of the buffer
     if (isUAV && psDecl->sUAV.bCounter)
     {
-        earlymainoss << "    device atomic_uint *" << BufName << "_counter = reinterpret_cast<device atomic_uint *> (" << BufName << ");\n";
+        bformata(GetEarlyMain(psContext), "device atomic_uint *%s_counter = reinterpret_cast<device atomic_uint *> (%s);\n", BufName.c_str(), BufName.c_str());
     }
 
     // Some GPUs don't allow memory access below buffer binding offset in the shader so always bind compute buffer
     // at offset 0 instead of GetDataOffset().
     // We can't tell at shader compile time if the buffer actually has counter or not. Therefore we'll always reserve
     // space for the counter and bump the data pointer to beginning of the actual data here.
-    earlymainoss << "    " << BufName << " = reinterpret_cast<" << BufConst
-    << "device " << (isRaw ? "uint" : BufType) << " *> (reinterpret_cast<device "
-    << BufConst << "atomic_uint *> (" << BufName << ") + 1);\n";
-
-    bformata(psContext->psShader->asPhases[psContext->currentPhase].earlyMain, earlymainoss.str().c_str());
+    bformata(GetEarlyMain(psContext), "%s = reinterpret_cast<%sdevice %s *> (reinterpret_cast<device %satomic_uint *> (%s) + 1);\n", BufName.c_str(), BufConst.c_str(), (isRaw ? "uint" : BufType.c_str()), BufConst.c_str(), BufName.c_str());
 }
 
 static int ParseInlineSamplerWrapMode(const std::string& samplerName, const std::string& wrapName)
@@ -1155,7 +1153,7 @@ static int ParseInlineSamplerWrapMode(const std::string& samplerName, const std:
     return res;
 }
 
-static bool EmitInlineSampler(HLSLCrossCompilerContext* ctx, const std::string& name)
+static bool EmitInlineSampler(HLSLCrossCompilerContext* psContext, const std::string& name)
 {
     // See if it's a sampler that goes with the texture, or an "inline" sampler
     // where sampler states are hardcoded in the shader directly.
@@ -1189,8 +1187,8 @@ static bool EmitInlineSampler(HLSLCrossCompilerContext* ctx, const std::string& 
         return false;
     }
 
-    bstring str = ctx->psShader->asPhases[ctx->currentPhase].earlyMain;
-    bformata(str, "\tconstexpr sampler %s(", name.c_str());
+    bstring str = GetEarlyMain(psContext);
+    bformata(str, "constexpr sampler %s(", name.c_str());
 
     if (hasCompare)
         bformata(str, "compare_func::greater_equal,");
@@ -1365,6 +1363,7 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
             if (psDecl->eOpcode == OPCODE_DCL_INPUT_PS_SIV && psOperand->eSpecialName == NAME_POSITION)
             {
                 m_StructDefinitions[""].m_Members.push_back(std::make_pair("mtl_FragCoord", "float4 mtl_FragCoord [[ position ]]"));
+                bcatcstr(GetEarlyMain(psContext), "float4 hlslcc_FragCoord = float4(mtl_FragCoord.xyz, 1.0/mtl_FragCoord.w);\n");
                 break;
             }
 
@@ -1477,29 +1476,28 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
         {
             uint32_t i = 0;
             const uint32_t ui32NumTemps = psDecl->value.ui32NumTemps;
-            glsl = psContext->psShader->asPhases[psContext->currentPhase].earlyMain;
             for (i = 0; i < ui32NumTemps; i++)
             {
                 if (psShader->psFloatTempSizes[i] != 0)
-                    bformata(glsl, "    %s " HLSLCC_TEMP_PREFIX "%d;\n", HLSLcc::GetConstructorForType(psContext, SVT_FLOAT, psShader->psFloatTempSizes[i]), i);
+                    bformata(GetEarlyMain(psContext), "%s " HLSLCC_TEMP_PREFIX "%d;\n", HLSLcc::GetConstructorForType(psContext, SVT_FLOAT, psShader->psFloatTempSizes[i]), i);
                 if (psShader->psFloat16TempSizes[i] != 0)
-                    bformata(glsl, "    %s " HLSLCC_TEMP_PREFIX "16_%d;\n", HLSLcc::GetConstructorForType(psContext, SVT_FLOAT16, psShader->psFloat16TempSizes[i]), i);
+                    bformata(GetEarlyMain(psContext), "%s " HLSLCC_TEMP_PREFIX "16_%d;\n", HLSLcc::GetConstructorForType(psContext, SVT_FLOAT16, psShader->psFloat16TempSizes[i]), i);
                 if (psShader->psFloat10TempSizes[i] != 0)
-                    bformata(glsl, "    %s " HLSLCC_TEMP_PREFIX "10_%d;\n", HLSLcc::GetConstructorForType(psContext, SVT_FLOAT10, psShader->psFloat10TempSizes[i]), i);
+                    bformata(GetEarlyMain(psContext), "%s " HLSLCC_TEMP_PREFIX "10_%d;\n", HLSLcc::GetConstructorForType(psContext, SVT_FLOAT10, psShader->psFloat10TempSizes[i]), i);
                 if (psShader->psIntTempSizes[i] != 0)
-                    bformata(glsl, "    %s " HLSLCC_TEMP_PREFIX "i%d;\n", HLSLcc::GetConstructorForType(psContext, SVT_INT, psShader->psIntTempSizes[i]), i);
+                    bformata(GetEarlyMain(psContext), "%s " HLSLCC_TEMP_PREFIX "i%d;\n", HLSLcc::GetConstructorForType(psContext, SVT_INT, psShader->psIntTempSizes[i]), i);
                 if (psShader->psInt16TempSizes[i] != 0)
-                    bformata(glsl, "    %s " HLSLCC_TEMP_PREFIX "i16_%d;\n", HLSLcc::GetConstructorForType(psContext, SVT_INT16, psShader->psInt16TempSizes[i]), i);
+                    bformata(GetEarlyMain(psContext), "%s " HLSLCC_TEMP_PREFIX "i16_%d;\n", HLSLcc::GetConstructorForType(psContext, SVT_INT16, psShader->psInt16TempSizes[i]), i);
                 if (psShader->psInt12TempSizes[i] != 0)
-                    bformata(glsl, "    %s " HLSLCC_TEMP_PREFIX "i12_%d;\n", HLSLcc::GetConstructorForType(psContext, SVT_INT12, psShader->psInt12TempSizes[i]), i);
+                    bformata(GetEarlyMain(psContext), "%s " HLSLCC_TEMP_PREFIX "i12_%d;\n", HLSLcc::GetConstructorForType(psContext, SVT_INT12, psShader->psInt12TempSizes[i]), i);
                 if (psShader->psUIntTempSizes[i] != 0)
-                    bformata(glsl, "    %s " HLSLCC_TEMP_PREFIX "u%d;\n", HLSLcc::GetConstructorForType(psContext, SVT_UINT, psShader->psUIntTempSizes[i]), i);
+                    bformata(GetEarlyMain(psContext), "%s " HLSLCC_TEMP_PREFIX "u%d;\n", HLSLcc::GetConstructorForType(psContext, SVT_UINT, psShader->psUIntTempSizes[i]), i);
                 if (psShader->psUInt16TempSizes[i] != 0)
-                    bformata(glsl, "    %s " HLSLCC_TEMP_PREFIX "u16_%d;\n", HLSLcc::GetConstructorForType(psContext, SVT_UINT16, psShader->psUInt16TempSizes[i]), i);
+                    bformata(GetEarlyMain(psContext), "%s " HLSLCC_TEMP_PREFIX "u16_%d;\n", HLSLcc::GetConstructorForType(psContext, SVT_UINT16, psShader->psUInt16TempSizes[i]), i);
                 if (psShader->fp64 && (psShader->psDoubleTempSizes[i] != 0))
-                    bformata(glsl, "    %s " HLSLCC_TEMP_PREFIX "d%d;\n", HLSLcc::GetConstructorForType(psContext, SVT_DOUBLE, psShader->psDoubleTempSizes[i]), i);
+                    bformata(GetEarlyMain(psContext), "%s " HLSLCC_TEMP_PREFIX "d%d;\n", HLSLcc::GetConstructorForType(psContext, SVT_DOUBLE, psShader->psDoubleTempSizes[i]), i);
                 if (psShader->psBoolTempSizes[i] != 0)
-                    bformata(glsl, "    %s " HLSLCC_TEMP_PREFIX "b%d;\n", HLSLcc::GetConstructorForType(psContext, SVT_BOOL, psShader->psBoolTempSizes[i]), i);
+                    bformata(GetEarlyMain(psContext), "%s " HLSLCC_TEMP_PREFIX "b%d;\n", HLSLcc::GetConstructorForType(psContext, SVT_BOOL, psShader->psBoolTempSizes[i]), i);
             }
             break;
         }
@@ -1701,7 +1699,7 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
             const uint32_t ui32RegIndex = psDecl->sIdxTemp.ui32RegIndex;
             const uint32_t ui32RegCount = psDecl->sIdxTemp.ui32RegCount;
             const uint32_t ui32RegComponentSize = psDecl->sIdxTemp.ui32RegComponentSize;
-            bformata(psContext->psShader->asPhases[psContext->currentPhase].earlyMain, "float%d TempArray%d[%d];\n", ui32RegComponentSize, ui32RegIndex, ui32RegCount);
+            bformata(GetEarlyMain(psContext), "float%d TempArray%d[%d];\n", ui32RegComponentSize, ui32RegIndex, ui32RegCount);
             break;
         }
         case OPCODE_DCL_INDEX_RANGE:
@@ -1782,9 +1780,7 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
                     oldString = psContext->currentGLSLString;
                     psContext->currentGLSLString = &psContext->psShader->asPhases[psContext->currentPhase].earlyMain;
                     psContext->AddIndentation();
-                    psContext->currentGLSLString = oldString;
                     bformata(psContext->psShader->asPhases[psContext->currentPhase].earlyMain, "%s4 phase%d_%sput%d_%d[%d];\n", type, psContext->currentPhase, isInput ? "In" : "Out", regSpace, startReg, psDecl->value.ui32IndexRange);
-                    oldString = psContext->currentGLSLString;
                     glsl = isInput ? psContext->psShader->asPhases[psContext->currentPhase].earlyMain : psContext->psShader->asPhases[psContext->currentPhase].postShaderCode;
                     psContext->currentGLSLString = &glsl;
                     if (isInput == 0)
@@ -1821,7 +1817,6 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
                             realName = psContext->GetDeclaredInputName(&psDecl->asOperands[0], &dummy, 1, NULL);
 
                             psContext->AddIndentation();
-
                             bformata(glsl, "phase%d_Input%d_%d[%d]", psContext->currentPhase, regSpace, startReg, i);
 
                             if (destMask != OPERAND_4_COMPONENT_MASK_ALL)
@@ -2079,8 +2074,7 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
             << "_Type " << TranslateOperand(&psDecl->asOperands[0], TO_FLAG_NAME_ONLY)
             << "[" << psDecl->sTGSM.ui32Count << "]";
 
-            bformata(psContext->psShader->asPhases[psContext->currentPhase].earlyMain, "\t%s;\n", oss.str().c_str());
-
+            bformata(GetEarlyMain(psContext), "%s;\n", oss.str().c_str());
             psVarType->name = "$Element";
 
             psVarType->Columns = psDecl->sTGSM.ui32Stride / 4;
@@ -2095,8 +2089,7 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
             oss << "threadgroup uint " << TranslateOperand(&psDecl->asOperands[0], TO_FLAG_NAME_ONLY)
             << "[" << (psDecl->sTGSM.ui32Count / psDecl->sTGSM.ui32Stride) << "]";
 
-            bformata(psContext->psShader->asPhases[psContext->currentPhase].earlyMain, "\t%s;\n", oss.str().c_str());
-
+            bformata(GetEarlyMain(psContext), "%s;\n", oss.str().c_str());
             psVarType->name = "$Element";
 
             psVarType->Columns = 1;

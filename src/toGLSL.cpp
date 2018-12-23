@@ -308,11 +308,20 @@ static void AddVersionDependentCode(HLSLCrossCompilerContext* psContext)
     if (psContext->psShader->eShaderType == PIXEL_SHADER &&
         (psContext->psShader->eTargetLanguage == LANG_ES_100 || psContext->psShader->eTargetLanguage == LANG_ES_300 || psContext->psShader->eTargetLanguage == LANG_ES_310 || (psContext->flags & HLSLCC_FLAG_NVN_TARGET)))
     {
-        if ((psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS) || (psContext->flags & HLSLCC_FLAG_NVN_TARGET))
-            bcatcstr(glsl, "precision highp float;\n");
-        else if (psContext->psShader->eTargetLanguage == LANG_ES_100)
+        if (psContext->psShader->eTargetLanguage == LANG_ES_100)
+        {
             // gles 2.0 shaders can have mediump as default if the GPU doesn't have highp support
-            bcatcstr(glsl, "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n");
+            bcatcstr(glsl,
+                "#ifdef GL_FRAGMENT_PRECISION_HIGH\n"
+                "    precision highp float;\n"
+                "#else\n"
+                "    precision mediump float;\n"
+                "#endif\n");
+        }
+        else
+        {
+            bcatcstr(glsl, "precision highp float;\n");
+        }
 
         // Define default int precision to highp to avoid issues on platforms that actually implement mediump
         bcatcstr(glsl, "precision highp int;\n");
@@ -495,19 +504,29 @@ static void DoHullShaderPassthrough(HLSLCrossCompilerContext *psContext)
             outputName = oss.str();
         }
 
-        const char * prec = HavePrecisionQualifiers(psContext) ? "highp " : "";
+        const char * prec = "";
+        if (HavePrecisionQualifiers(psContext))
+        {
+            if (psSig->eMinPrec != MIN_PRECISION_DEFAULT)
+                prec = "mediump ";
+            else
+                prec = "highp ";
+        }
+
+        int inLoc = psContext->psDependencies->GetVaryingLocation(inputName, HULL_SHADER, true);
+        int outLoc = psContext->psDependencies->GetVaryingLocation(outputName, HULL_SHADER, false);
 
         psContext->AddIndentation();
-        if (ui32NumComponents > 1) // TODO Precision
-            bformata(glsl, "in %s%s%d %s%s%d[];\n", prec, Type, ui32NumComponents, psContext->inputPrefix, psSig->semanticName.c_str(), psSig->ui32SemanticIndex);
+        if (ui32NumComponents > 1)
+            bformata(glsl, "layout(location = %d) in %s%s%d %s%s%d[];\n", inLoc, prec, Type, ui32NumComponents, psContext->inputPrefix, psSig->semanticName.c_str(), psSig->ui32SemanticIndex);
         else
-            bformata(glsl, "in %s%s %s%s%d[];\n", prec, Type, psContext->inputPrefix, psSig->semanticName.c_str(), psSig->ui32SemanticIndex);
+            bformata(glsl, "layout(location = %d) in %s%s %s%s%d[];\n", inLoc, prec, Type, psContext->inputPrefix, psSig->semanticName.c_str(), psSig->ui32SemanticIndex);
 
         psContext->AddIndentation();
-        if (ui32NumComponents > 1) // TODO Precision
-            bformata(glsl, "out %s%s%d %s%s%d[];\n", prec, Type, ui32NumComponents, psContext->outputPrefix, psSig->semanticName.c_str(), psSig->ui32SemanticIndex);
+        if (ui32NumComponents > 1)
+            bformata(glsl, "layout(location = %d) out %s%s%d %s%s%d[];\n", inLoc, prec, Type, ui32NumComponents, psContext->outputPrefix, psSig->semanticName.c_str(), psSig->ui32SemanticIndex);
         else
-            bformata(glsl, "out %s%s %s%s%d[];\n", prec, Type, psContext->outputPrefix, psSig->semanticName.c_str(), psSig->ui32SemanticIndex);
+            bformata(glsl, "layout(location = %d) out %s%s %s%s%d[];\n", inLoc, prec, Type, psContext->outputPrefix, psSig->semanticName.c_str(), psSig->ui32SemanticIndex);
     }
 
     psContext->AddIndentation();
@@ -624,7 +643,7 @@ bool ToGLSL::Translate()
         psContext->DoDataTypeAnalysis(&phase);
         phase.ResolveUAVProperties();
         psShader->ResolveStructuredBufferBindingSlots(&phase);
-        if (!psContext->IsVulkan())
+        if (!psContext->IsVulkan() && !psContext->IsSwitch())
             phase.PruneConstArrays();
     }
 
@@ -796,7 +815,26 @@ bool ToGLSL::Translate()
 
         bcatcstr(glsl, "}\n");
 
+        // Print out extra functions we generated, in reverse order for potential dependencies
+        std::for_each(m_FunctionDefinitions.rbegin(), m_FunctionDefinitions.rend(), [&extensions](const FunctionDefinitions::value_type &p)
+        {
+            bcatcstr(extensions, p.second.c_str());
+            bcatcstr(extensions, "\n");
+        });
+
         // Concat extensions and glsl for the final shader code.
+        if (m_NeedUnityInstancingArraySizeDecl)
+        {
+            if (psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS)
+            {
+                bformata(extensions, "layout(constant_id = %d) const int %s = 2;\n", kArraySizeConstantID, UNITY_RUNTIME_INSTANCING_ARRAY_SIZE_MACRO);
+            }
+            else
+            {
+                bcatcstr(extensions, "#ifndef " UNITY_RUNTIME_INSTANCING_ARRAY_SIZE_MACRO "\n\t#define " UNITY_RUNTIME_INSTANCING_ARRAY_SIZE_MACRO " 2\n#endif\n");
+            }
+        }
+
         bconcat(extensions, glsl);
         bdestroy(glsl);
         psContext->glsl = extensions;
@@ -858,6 +896,7 @@ bool ToGLSL::Translate()
         }
     }
 
+    bstring generatedFunctionsKeyword = bfromcstr("\n// Generated functions\n\n");
     bstring beforeMain = NULL;
     bstring beforeMainKeyword = NULL;
 
@@ -877,6 +916,9 @@ bool ToGLSL::Translate()
     {
         DeclareSpecializationConstants(psShader->asPhases[0]);
     }
+
+    // Search and replace string, for injecting generated functions that need to be after default precision declarations
+    bconcat(glsl, generatedFunctionsKeyword);
 
     // Search and replace string, for injecting stuff from translation that need to be after normal declarations and before main
     if (!HaveDynamicIndexing(psContext))
@@ -910,12 +952,19 @@ bool ToGLSL::Translate()
 
     bcatcstr(glsl, "}\n");
 
-    // Print out extra functions we generated, in reverse order for potential dependencies
-    std::for_each(m_FunctionDefinitions.rbegin(), m_FunctionDefinitions.rend(), [&extensions](const FunctionDefinitions::value_type &p)
+    // Print out extra functions we generated in generation order to satisfy dependencies
     {
-        bcatcstr(extensions, p.second.c_str());
-        bcatcstr(extensions, "\n");
-    });
+        bstring generatedFunctions = bfromcstr("");
+        for (std::vector<std::string>::const_iterator funcNameIter = m_FunctionDefinitionsOrder.begin(); funcNameIter != m_FunctionDefinitionsOrder.end(); ++funcNameIter)
+        {
+            const FunctionDefinitions::const_iterator definition = m_FunctionDefinitions.find(*funcNameIter);
+            ASSERT(definition != m_FunctionDefinitions.end());
+            bcatcstr(generatedFunctions, definition->second.c_str());
+            bcatcstr(generatedFunctions, "\n");
+        }
+        bfindreplace(glsl, generatedFunctionsKeyword, generatedFunctions, 0);
+        bdestroy(generatedFunctions);
+    }
 
     // Concat extensions and glsl for the final shader code.
     if (m_NeedUnityInstancingArraySizeDecl)
@@ -959,6 +1008,7 @@ bool ToGLSL::DeclareExtraFunction(const std::string &name, bstring body)
     if (m_FunctionDefinitions.find(name) != m_FunctionDefinitions.end())
         return true;
     m_FunctionDefinitions.insert(std::make_pair(name, (const char *)body->data));
+    m_FunctionDefinitionsOrder.push_back(name);
     return false;
 }
 
@@ -1010,14 +1060,14 @@ void ToGLSL::UseExtraFunctionDependency(const std::string &name)
     {
         UseExtraFunctionDependency("op_modi");
 
-        bformata(code, "int op_and(int a, int b) { int result = 0; int n = 1; for (int i = 0; i < BITWISE_BIT_COUNT; i++) { if ((op_modi(a, 2) == 1) && (op_modi(b, 2) == 1)) { result += n; } a = a / 2; b = b / 2; n = n * 2; if (!(a > 0 && b > 0)) { break; } } return result; }\n");
+        bformata(code, "int op_and(int a, int b) { int result = 0; int n = 1; for (int i = 0; i < BITWISE_BIT_COUNT; i++) { if ((op_modi(a, 2) != 0) && (op_modi(b, 2) != 0)) { result += n; } a = a / 2; b = b / 2; n = n * 2; if (!(a > 0 && b > 0)) { break; } } return result; }\n");
         PrintComponentWrapper2(code, "op_and", "ivec2", "ivec3", "ivec4");
     }
     else if (name == "op_or")
     {
         UseExtraFunctionDependency("op_modi");
 
-        bformata(code, "int op_or(int a, int b) { int result = 0; int n = 1; for (int i = 0; i < BITWISE_BIT_COUNT; i++) { if ((op_modi(a, 2) == 1) || (op_modi(b, 2) == 1)) { result += n; } a = a / 2; b = b / 2; n = n * 2; if (!(a > 0 || b > 0)) { break; } } return result; }\n");
+        bformata(code, "int op_or(int a, int b) { int result = 0; int n = 1; for (int i = 0; i < BITWISE_BIT_COUNT; i++) { if ((op_modi(a, 2) != 0) || (op_modi(b, 2) != 0)) { result += n; } a = a / 2; b = b / 2; n = n * 2; if (!(a > 0 || b > 0)) { break; } } return result; }\n");
         PrintComponentWrapper2(code, "op_or", "ivec2", "ivec3", "ivec4");
     }
     else if (name == "op_xor")
@@ -1041,6 +1091,15 @@ void ToGLSL::UseExtraFunctionDependency(const std::string &name)
     {
         bformata(code, "int op_not(int value) { return -value - 1; }\n");
         PrintComponentWrapper1(code, "op_not", "ivec2", "ivec3", "ivec4");
+    }
+    else if (name == "int_bitfieldInsert")
+    {
+        // Can't use the name 'bitfieldInsert' because Adreno fails with "can't redefine/overload built-in functions!"
+        bcatcstr(code,
+            "int int_bitfieldInsert(int base, int insert, int offset, int bits) {\n"
+            "    uint mask = ~(uint(0xffffffff) << uint(bits)) << uint(offset);\n"
+            "    return int((uint(base) & ~mask) | ((uint(insert) << uint(offset)) & mask));\n"
+            "}\n");
     }
     else
     {

@@ -61,6 +61,9 @@ namespace HLSLcc
     // Helper function to print floats with full precision
     void PrintFloat(bstring b, float f);
 
+    bstring GetEarlyMain(HLSLCrossCompilerContext *psContext);
+    bstring GetPostShaderCode(HLSLCrossCompilerContext *psContext);
+
     // Flags for ForeachOperand
     // Process suboperands
 #define FEO_FLAG_SUBOPERAND 1

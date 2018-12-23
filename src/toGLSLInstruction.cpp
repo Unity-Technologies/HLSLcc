@@ -18,6 +18,7 @@ using namespace HLSLcc;
 const char* GetSamplerType(HLSLCrossCompilerContext* psContext,
     const RESOURCE_DIMENSION eDimension,
     const uint32_t ui32RegisterNumber);
+bool DeclareRWStructuredBufferTemplateTypeAsInteger(HLSLCrossCompilerContext* psContext, const Operand* psOperand);
 
 // This function prints out the destination name, possible destination writemask, assignment operator
 // and any possible conversions needed based on the eSrcType+ui32SrcElementCount (type and size of data expected to be coming in)
@@ -209,7 +210,7 @@ void ToGLSL::AddComparison(Instruction* psInst, ComparisonType eType,
                 if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
                     bcatcstr(glsl, " * 0xFFFFFFFFu");
                 else
-                    bcatcstr(glsl, " * 0xFFFFFFFF");
+                    bcatcstr(glsl, " * -1");    // GLSL ES 2 spec: high precision ints are guaranteed to have a range of at least (-2^16, 2^16)
             }
         }
 
@@ -258,10 +259,9 @@ void ToGLSL::AddComparison(Instruction* psInst, ComparisonType eType,
                     bcatcstr(glsl, "1.0 : 0.0");
                 else
                 {
-                    if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
-                        bcatcstr(glsl, "0xFFFFFFFFu : uint(0u)"); // Adreno can't handle 0u.
-                    else
-                        bcatcstr(glsl, "0xFFFFFFFF : int(0)");
+                    // Old ES3.0 Adrenos treat 0u as const int.
+                    // GLSL ES 2 spec: high precision ints are guaranteed to have a range of at least (-2^16, 2^16)
+                    bcatcstr(glsl, HaveUnsignedTypes(psContext->psShader->eTargetLanguage) ? ") ? 0xFFFFFFFFu : uint(0)" : ") ? -1 : 0");
                 }
                 AddAssignPrologue(needsParenthesis, true);
                 bcatcstr(glsl, "; }\n");
@@ -288,15 +288,12 @@ void ToGLSL::AddComparison(Instruction* psInst, ComparisonType eType,
         if (!isBoolDest)
         {
             if (floatResult)
-            {
                 bcatcstr(glsl, ") ? 1.0 : 0.0");
-            }
             else
             {
-                if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
-                    bcatcstr(glsl, ") ? 0xFFFFFFFFu : uint(0u)"); // Adreno can't handle 0u.
-                else
-                    bcatcstr(glsl, ") ? 0xFFFFFFFF : int(0)");
+                // Old ES3.0 Adrenos treat 0u as const int.
+                // GLSL ES 2 spec: high precision ints are guaranteed to have a range of at least (-2^16, 2^16)
+                bcatcstr(glsl, HaveUnsignedTypes(psContext->psShader->eTargetLanguage) ? ") ? 0xFFFFFFFFu : uint(0)" : ") ? -1 : 0");
             }
         }
         AddAssignPrologue(needsParenthesis);
@@ -369,10 +366,7 @@ void ToGLSL::AddMOVCBinaryOp(const Operand *pDest, const Operand *src0, Operand 
         else
         {
             if (s0Type == SVT_UINT || s0Type == SVT_UINT16)
-                if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
-                    bcatcstr(glsl, " != uint(0u)) ? "); // Adreno doesn't understand 0u.
-                else
-                    bcatcstr(glsl, " != int(0)) ? ");
+                bcatcstr(glsl, HaveUnsignedTypes(psContext->psShader->eTargetLanguage) ? " != uint(0)) ? " : " != 0) ? ");  // Old ES3.0 Adrenos treat 0u as const int.
             else if (s0Type == SVT_BOOL)
                 bcatcstr(glsl, ") ? ");
             else
@@ -396,13 +390,18 @@ void ToGLSL::AddMOVCBinaryOp(const Operand *pDest, const Operand *src0, Operand 
     {
         // TODO: We can actually do this in one op using mix().
         int srcElem = -1;
+        SHADER_VARIABLE_TYPE dstType = pDest->GetDataType(psContext);
         SHADER_VARIABLE_TYPE s0Type = src0->GetDataType(psContext);
 
         // Use an extra temp if dest is also one of the sources. Without this some swizzle combinations
         // might alter the source before all components are handled.
-        const char* tempName = "hlslcc_movcTemp";
-        bool dstIsSrc1 = (pDest->eType == src1->eType) && (pDest->ui32RegisterNumber == src1->ui32RegisterNumber);
-        bool dstIsSrc2 = (pDest->eType == src2->eType) && (pDest->ui32RegisterNumber == src2->ui32RegisterNumber);
+        const std::string tempName = "hlslcc_movcTemp";
+        bool dstIsSrc1 = (pDest->eType == src1->eType)
+            && (dstType == src1->GetDataType(psContext))
+            && (pDest->ui32RegisterNumber == src1->ui32RegisterNumber);
+        bool dstIsSrc2 = (pDest->eType == src2->eType)
+            && (dstType == src2->GetDataType(psContext))
+            && (pDest->ui32RegisterNumber == src2->ui32RegisterNumber);
 
         if (dstIsSrc1 || dstIsSrc2)
         {
@@ -413,9 +412,14 @@ void ToGLSL::AddMOVCBinaryOp(const Operand *pDest, const Operand *src0, Operand 
             int numComponents = (pDest->eType == OPERAND_TYPE_TEMP) ?
                 psContext->psShader->GetTempComponentCount(eDestType, pDest->ui32RegisterNumber) :
                 pDest->iNumComponents;
-            bformata(glsl, "%s %s = ", HLSLcc::GetConstructorForType(psContext, eDestType, numComponents), tempName);
-            TranslateOperand(glsl, pDest, TO_FLAG_NAME_ONLY);
-            bcatcstr(glsl, ";\n");
+
+            const char* constructorStr = HLSLcc::GetConstructorForType(psContext, eDestType, numComponents, false);
+            bformata(glsl, "%s %s = ", constructorStr, tempName.c_str());
+            TranslateOperand(pDest, TO_FLAG_NAME_ONLY);
+            bformata(glsl, ";\n");
+
+            // Override OPERAND_TYPE_TEMP name temporarily
+            const_cast<Operand *>(pDest)->specialName.assign(tempName);
         }
 
         for (destElem = 0; destElem < 4; ++destElem)
@@ -448,29 +452,20 @@ void ToGLSL::AddMOVCBinaryOp(const Operand *pDest, const Operand *src0, Operand 
                 }
             }
 
-            if (!dstIsSrc1)
-                TranslateOperand(src1, SVTTypeToFlag(eDestType), 1 << srcElem);
-            else
-            {
-                bformata(glsl, "%s", tempName);
-                TranslateOperandSwizzleWithMask(glsl, psContext, src1, 1 << srcElem, 0);
-            }
-
+            TranslateOperand(src1, SVTTypeToFlag(eDestType), 1 << srcElem);
             bcatcstr(glsl, " : ");
-
-            if (!dstIsSrc2)
-                TranslateOperand(src2, SVTTypeToFlag(eDestType), 1 << srcElem);
-            else
-            {
-                bformata(glsl, "%s", tempName);
-                TranslateOperandSwizzleWithMask(glsl, psContext, src2, 1 << srcElem, 0);
-            }
-
+            TranslateOperand(src2, SVTTypeToFlag(eDestType), 1 << srcElem);
             AddAssignPrologue(numParenthesis);
         }
 
         if (dstIsSrc1 || dstIsSrc2)
         {
+            const_cast<Operand *>(pDest)->specialName.clear();
+
+            psContext->AddIndentation();
+            TranslateOperand(glsl, pDest, TO_FLAG_NAME_ONLY);
+            bformata(glsl, " = %s;\n", tempName.c_str());
+
             --psContext->indent;
             psContext->AddIndentation();
             bcatcstr(glsl, "}\n");
@@ -530,12 +525,9 @@ void ToGLSL::CallBinaryOp(const char* name, Instruction* psInst,
 
     AddAssignToDest(&psInst->asOperands[dest], eDataType, dstSwizCount, &needsParenthesis);
 
-    // Horrible Adreno bug workaround:
-    // All pre-ES3.1 Adreno GLES3.0 drivers fail in cases like this:
-    // vec4 a.xyz = b.xyz + c.yzw;
-    // Attempt to detect this and fall back to component-wise binary op.
-    if ((psContext->psShader->eTargetLanguage == LANG_ES_300) &&
-        ((src0AccessCount > 1 && !(src0AccessMask & OPERAND_4_COMPONENT_MASK_X)) || (src1AccessCount > 1 && !(src1AccessMask & OPERAND_4_COMPONENT_MASK_X))))
+    // Adreno 3xx fails on binary ops that operate on vectors
+    bool opComponentWiseOnAdreno = (!strcmp("&", name) || !strcmp("|", name) || !strcmp("^", name) || !strcmp(">>", name) || !strcmp("<<", name));
+    if (psContext->psShader->eTargetLanguage == LANG_ES_300 && opComponentWiseOnAdreno)
     {
         uint32_t i;
         int firstPrinted = 0;
@@ -566,6 +558,7 @@ void ToGLSL::CallBinaryOp(const char* name, Instruction* psInst,
         bformata(glsl, " %s ", name);
         TranslateOperand(&psInst->asOperands[src1], ui32Flags, destMask);
     }
+
     AddAssignPrologue(needsParenthesis, isEmbedded);
 }
 
@@ -997,10 +990,7 @@ void ToGLSL::GetResInfoData(Instruction* psInst, int index, int destElem)
         bcatcstr(glsl, "(");
         if (dim < (index + 1))
         {
-            if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
-                bcatcstr(glsl, eResInfoReturnType == RESINFO_INSTRUCTION_RETURN_UINT ? "uint(0u)" : "0.0");
-            else
-                bcatcstr(glsl, eResInfoReturnType == RESINFO_INSTRUCTION_RETURN_UINT ? "int(0)" : "0.0");
+            bcatcstr(glsl, eResInfoReturnType == RESINFO_INSTRUCTION_RETURN_UINT ? (HaveUnsignedTypes(psContext->psShader->eTargetLanguage) ? "uint(0)" : "0") : "0.0");    // Old ES3.0 Adrenos treat 0u as const int.
         }
         else
         {
@@ -1099,6 +1089,12 @@ void ToGLSL::TranslateTextureSample(Instruction* psInst,
     {
         offset = "Offset";
     }
+    if (psContext->IsSwitch() && psInst->eOpcode == OPCODE_GATHER4_PO)
+    {
+        // it seems that other GLSLCore compilers accept textureGather(sampler2D sampler, vec2 texCoord, ivec2 texelOffset, int component) with the "texelOffset" parameter,
+        // however this is not in the GLSL spec, and Switch's GLSLc compiler requires to use the textureGatherOffset version of the function
+        offset = "Offset";
+    }
 
     switch (eResDim)
     {
@@ -1193,8 +1189,7 @@ void ToGLSL::TranslateTextureSample(Instruction* psInst,
     //
     // Here we create a temp texcoord var with the reference value embedded
     if ((ui32Flags & TEXSMP_FLAG_DEPTHCOMPARE) &&
-        eResDim != RESOURCE_DIMENSION_TEXTURECUBEARRAY &&
-        !(ui32Flags & TEXSMP_FLAG_GATHER))
+        (eResDim != RESOURCE_DIMENSION_TEXTURECUBEARRAY && !(ui32Flags & TEXSMP_FLAG_GATHER)))
     {
         uniqueNameCounter = psContext->psShader->asPhases[psContext->currentPhase].m_NextTexCoordTemp++;
         psContext->AddIndentation();
@@ -1261,8 +1256,7 @@ void ToGLSL::TranslateTextureSample(Instruction* psInst,
     // Texture coordinates, either from previously constructed temp
     // or straight from the psDestAddr operand
     if ((ui32Flags & TEXSMP_FLAG_DEPTHCOMPARE) &&
-        eResDim != RESOURCE_DIMENSION_TEXTURECUBEARRAY &&
-        !(ui32Flags & TEXSMP_FLAG_GATHER))
+        (eResDim != RESOURCE_DIMENSION_TEXTURECUBEARRAY && !(ui32Flags & TEXSMP_FLAG_GATHER)))
         bformata(glsl, "txVec%d", uniqueNameCounter);
     else
         TranslateTexCoord(eResDim, psDestAddr);
@@ -1270,8 +1264,7 @@ void ToGLSL::TranslateTextureSample(Instruction* psInst,
     // If depth compare reference was not embedded to texcoord
     // then insert it here as a separate param
     if ((ui32Flags & TEXSMP_FLAG_DEPTHCOMPARE) &&
-        eResDim == RESOURCE_DIMENSION_TEXTURECUBEARRAY &&
-        (ui32Flags & TEXSMP_FLAG_GATHER))
+        (eResDim == RESOURCE_DIMENSION_TEXTURECUBEARRAY || (ui32Flags & TEXSMP_FLAG_GATHER)))
     {
         bcatcstr(glsl, ", ");
         TranslateOperand(psSrcRef, TO_AUTO_BITCAST_TO_FLOAT);
@@ -1365,7 +1358,7 @@ void ToGLSL::TranslateTextureSample(Instruction* psInst,
             }
             else
             {
-                // Comp selection not supported with dephth compare gather
+                // Component selection not supported with depth compare gather
             }
         }
     }
@@ -1490,12 +1483,15 @@ void ToGLSL::TranslateShaderStorageStore(Instruction* psInst)
 
             bcatcstr(glsl, "]");
 
-            //Dest type is currently always a uint array.
+            uint32_t srcFlag = TO_FLAG_UNSIGNED_INTEGER;
+            if (DeclareRWStructuredBufferTemplateTypeAsInteger(psContext, psDest))
+                srcFlag = TO_FLAG_INTEGER;
+
             bcatcstr(glsl, " = ");
             if (psSrc->GetNumSwizzleElements() > 1)
-                TranslateOperand(psSrc, TO_FLAG_UNSIGNED_INTEGER, 1 << (srcComponent++));
+                TranslateOperand(psSrc, srcFlag, 1 << (srcComponent++));
             else
-                TranslateOperand(psSrc, TO_FLAG_UNSIGNED_INTEGER, OPERAND_4_COMPONENT_MASK_X);
+                TranslateOperand(psSrc, srcFlag, OPERAND_4_COMPONENT_MASK_X);
 
             bcatcstr(glsl, ";\n");
         }
@@ -1606,6 +1602,7 @@ void ToGLSL::TranslateAtomicMemOp(Instruction* psInst)
 {
     bstring glsl = *psContext->currentGLSLString;
     int numParenthesis = 0;
+    uint32_t ui32DstDataTypeFlag = TO_FLAG_DESTINATION | TO_FLAG_NAME_ONLY;
     uint32_t ui32DataTypeFlag = TO_FLAG_INTEGER;
     const char* func = "";
     Operand* dest = 0;
@@ -1900,6 +1897,14 @@ void ToGLSL::TranslateAtomicMemOp(Instruction* psInst)
                     break;
             }
         }
+        else if (psBinding->eType == RTYPE_UAV_RWSTRUCTURED)
+        {
+            if (DeclareRWStructuredBufferTemplateTypeAsInteger(psContext, dest))
+            {
+                isUint = false;
+                ui32DstDataTypeFlag |= TO_FLAG_INTEGER;
+            }
+        }
     }
 
     if (isUint && HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
@@ -1918,7 +1923,8 @@ void ToGLSL::TranslateAtomicMemOp(Instruction* psInst)
     bcatcstr(glsl, func);
     bcatcstr(glsl, "(");
 
-    TranslateOperand(dest, TO_FLAG_DESTINATION | TO_FLAG_NAME_ONLY);
+    TranslateOperand(dest, ui32DstDataTypeFlag);
+
     if (texDim > 0)
     {
         bcatcstr(glsl, ", ");
@@ -2037,11 +2043,7 @@ void ToGLSL::TranslateConditional(
         else
             bcatcstr(glsl, " != ");
 
-        if (isInt)
-            bcatcstr(glsl, "0)");
-        else
-            bcatcstr(glsl, "uint(0u))");
-
+        bcatcstr(glsl, isInt ? "0)" : "uint(0))");  // Old ES3.0 Adrenos treat 0u as const int.
 
         if (psInst->eOpcode != OPCODE_IF)
         {
@@ -2435,9 +2437,9 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
                     bcatcstr(glsl, "(");
                     TranslateOperand(&psInst->asOperands[boolOp], TO_FLAG_BOOL, destMask);
                     if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
-                        bcatcstr(glsl, ") * 0xffffffffu) & ");
+                        bcatcstr(glsl, ") * 0xFFFFFFFFu) & ");
                     else
-                        bcatcstr(glsl, ") * 0xffffffff) & ");
+                        bcatcstr(glsl, ") * -1) & ");   // GLSL ES 2 spec: high precision ints are guaranteed to have a range of at least (-2^16, 2^16)
                     TranslateOperand(&psInst->asOperands[otherOp], TO_FLAG_UNSIGNED_INTEGER, destMask);
                 }
 
@@ -3095,6 +3097,8 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
             psContext->AddIndentation();
             bcatcstr(glsl, "//BFI\n");
 #endif
+            if (psContext->psShader->eTargetLanguage == LANG_ES_300)
+                UseExtraFunctionDependency("int_bitfieldInsert");
 
             psContext->AddIndentation();
             AddAssignToDest(&psInst->asOperands[0], SVT_INT, numoverall_elements, &numParenthesis);
@@ -3111,7 +3115,10 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
                     continue;
 
                 k++;
-                bcatcstr(glsl, "bitfieldInsert(");
+                if (psContext->psShader->eTargetLanguage == LANG_ES_300)
+                    bcatcstr(glsl, "int_bitfieldInsert(");
+                else
+                    bcatcstr(glsl, "bitfieldInsert(");
 
                 for (j = 4; j >= 1; --j)
                 {
@@ -3428,7 +3435,8 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
                     name = bformat(HLSLCC_TEMP_PREFIX "i_while_true_%d", m_NumDeclaredWhileTrueLoops++);
 
                     // Workaround limitation with WebGL 1.0 GLSL, as we're expecting something to break the loop in any case
-                    int hardcoded_iteration_limit = 0x7FFFFFFF;
+                    // Fragment shaders on some devices don't like too large integer constants (Adreno 3xx, for example)
+                    int hardcoded_iteration_limit = (psContext->psShader->eShaderType == PIXEL_SHADER) ? 0x7FFF : 0x7FFFFFFF;
 
                     bformata(glsl, "for(int %s = 0 ; %s < 0x%X ; %s++){\n", name->data, name->data, hardcoded_iteration_limit, name->data);
                 }
@@ -3856,6 +3864,10 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
                 case RETURN_TYPE_UINT:
                     srcDataType = SVT_UINT;
                     break;
+                case RETURN_TYPE_SNORM:
+                case RETURN_TYPE_UNORM:
+                    srcDataType = SVT_FLOAT;
+                    break;
                 default:
                     ASSERT(0);
                     // Suppress uninitialised variable warning
@@ -4219,7 +4231,8 @@ void ToGLSL::TranslateInstruction(Instruction* psInst, bool isEmbedded /* = fals
             psContext->AddIndentation();
             bcatcstr(glsl, "//NOT\n");
 #endif
-            if (!HaveNativeBitwiseOps(psContext->psShader->eTargetLanguage))
+            // Adreno 3xx fails on ~a with "Internal compiler error: unexpected operator", use op_not instead
+            if (!HaveNativeBitwiseOps(psContext->psShader->eTargetLanguage) || psContext->psShader->eTargetLanguage == LANG_ES_300)
             {
                 UseExtraFunctionDependency("op_not");
 

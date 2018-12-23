@@ -293,3 +293,8 @@ bool HLSLCrossCompilerContext::IsVulkan() const
 {
     return (flags & HLSLCC_FLAG_VULKAN_BINDINGS) != 0;
 }
+
+bool HLSLCrossCompilerContext::IsSwitch() const
+{
+    return (flags & HLSLCC_FLAG_NVN_TARGET) != 0;
+}

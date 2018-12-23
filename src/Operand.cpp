@@ -113,8 +113,6 @@ uint32_t Operand::GetNumSwizzleElements(uint32_t _ui32CompMask /* = OPERAND_4_CO
 
     switch (eType)
     {
-        case OPERAND_TYPE_INPUT_THREAD_ID_IN_GROUP_FLATTENED:
-            return 1; // TODO: does mask make any sense here?
         case OPERAND_TYPE_INPUT_THREAD_ID_IN_GROUP:
         case OPERAND_TYPE_INPUT_THREAD_ID:
         case OPERAND_TYPE_INPUT_THREAD_GROUP_ID:
@@ -368,6 +366,8 @@ SHADER_VARIABLE_TYPE Operand::GetDataType(HLSLCrossCompilerContext* psContext, S
             break;
         }
         case OPERAND_TYPE_INPUT:
+        case OPERAND_TYPE_INPUT_PATCH_CONSTANT:
+        case OPERAND_TYPE_INPUT_CONTROL_POINT:
         {
             const uint32_t ui32Register = aui32ArraySizes[iIndexDims - 1];
             int regSpace = GetRegisterSpace(psContext);
@@ -398,7 +398,7 @@ SHADER_VARIABLE_TYPE Operand::GetDataType(HLSLCrossCompilerContext* psContext, S
                 case NAME_RENDER_TARGET_ARRAY_INDEX:
                 case NAME_VIEWPORT_ARRAY_INDEX:
                 case NAME_SAMPLE_INDEX:
-                    return SVT_INT;
+                    return (psContext->psShader->eTargetLanguage == LANG_METAL) ? SVT_UINT : SVT_INT;
 
                 case NAME_IS_FRONT_FACE:
                     return SVT_UINT;
@@ -416,22 +416,14 @@ SHADER_VARIABLE_TYPE Operand::GetDataType(HLSLCrossCompilerContext* psContext, S
             if (psIn->eSystemValueType == NAME_IS_FRONT_FACE)
                 return SVT_UINT;
 
-            if (eSpecialName == NAME_PRIMITIVE_ID || eSpecialName == NAME_VERTEX_ID)
-            {
-                return SVT_INT;
-            }
-
             //UINT in DX, INT in GL.
-            if (psIn->eSystemValueType == NAME_INSTANCE_ID ||
-                psIn->eSystemValueType == NAME_PRIMITIVE_ID ||
+            if (psIn->eSystemValueType == NAME_PRIMITIVE_ID ||
                 psIn->eSystemValueType == NAME_VERTEX_ID ||
+                psIn->eSystemValueType == NAME_INSTANCE_ID ||
                 psIn->eSystemValueType == NAME_RENDER_TARGET_ARRAY_INDEX ||
                 psIn->eSystemValueType == NAME_VIEWPORT_ARRAY_INDEX ||
-                psIn->eSystemValueType == NAME_SAMPLE_INDEX
-            )
-            {
-                return SVT_INT;
-            }
+                psIn->eSystemValueType == NAME_SAMPLE_INDEX)
+                return (psContext->psShader->eTargetLanguage == LANG_METAL) ? SVT_UINT : SVT_INT;
 
             if (psIn->eMinPrec != MIN_PRECISION_DEFAULT)
             {

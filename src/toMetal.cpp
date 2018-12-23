@@ -254,6 +254,8 @@ bool ToMetal::Translate()
         if (m_StructDefinitions[GetInputStructName()].m_Members.size() > 0)
         {
             m_StructDefinitions[GetInputStructName()].m_Dependencies.push_back(GetInputStructName());
+            if (psContext->psDependencies)
+                psContext->psDependencies->m_SharedDependencies.push_back(GetInputStructName());
 
             // Hack, we're reusing Mtl_VertexOut as an hull shader input array, so no need to declare original contents
             m_StructDefinitions[GetInputStructName()].m_Members.clear();
@@ -266,10 +268,14 @@ bool ToMetal::Translate()
 
         if (psContext->psDependencies)
         {
-            for (auto itr = psContext->psDependencies->m_SharedFunctionMembers.begin(); itr != psContext->psDependencies->m_SharedFunctionMembers.end(); itr++)
+            for (auto i = psContext->psDependencies->m_SharedFunctionMembers.begin(), in = psContext->psDependencies->m_SharedFunctionMembers.end(); i != in;)
             {
-                tessVertexFunctionArguments += itr->first.c_str();
-                tessVertexFunctionArguments += ", ";
+                tessVertexFunctionArguments += i->first.c_str();
+                ++i;
+
+                // we want to avoid trailing comma
+                if (i != in)
+                    tessVertexFunctionArguments += ", ";
             }
         }
     }
@@ -301,7 +307,22 @@ bool ToMetal::Translate()
     {
         if (psShader->eShaderType == HULL_SHADER)
         {
-            m_StructDefinitions[""].m_Members.push_back(std::make_pair("vertexInput", "Mtl_VertexIn vertexInput [[ stage_in ]]"));
+            if (psContext->psDependencies)
+            {
+                // if we go for fully procedural geometry we might end up without Mtl_VertexIn
+                for (std::vector<std::string>::const_iterator itr = psContext->psDependencies->m_SharedDependencies.begin(); itr != psContext->psDependencies->m_SharedDependencies.end(); itr++)
+                {
+                    if (*itr == "Mtl_VertexIn")
+                    {
+                        m_StructDefinitions[""].m_Members.push_back(std::make_pair("vertexInput", "Mtl_VertexIn vertexInput [[ stage_in ]]"));
+                        if (tessVertexFunctionArguments.length())
+                            tessVertexFunctionArguments += ", ";
+                        tessVertexFunctionArguments += "vertexInput";
+                        break;
+                    }
+                }
+            }
+
             m_StructDefinitions[""].m_Members.push_back(std::make_pair("tID", "uint2 tID [[ thread_position_in_grid ]]"));
             m_StructDefinitions[""].m_Members.push_back(std::make_pair("groupID", "ushort2 groupID [[ threadgroup_position_in_grid ]]"));
 
@@ -345,22 +366,33 @@ bool ToMetal::Translate()
             m_StructDefinitions[""].m_Members.push_back(std::make_pair("input", GetInputStructName() + " input [[ stage_in ]]"));
         }
 
-        if ((psShader->eShaderType == VERTEX_SHADER || psShader->eShaderType == HULL_SHADER) && (psContext->flags & HLSLCC_FLAG_METAL_TESSELLATION) != 0)
-        {
-            // m_StructDefinitions is inherited between tessellation shader stages but some builtins need exceptions
-            std::for_each(m_StructDefinitions[""].m_Members.begin(), m_StructDefinitions[""].m_Members.end(), [&psShader](MemberDefinitions::value_type &mem)
-            {
-                if (mem.first == "mtl_InstanceID")
-                {
-                    if (psShader->eShaderType == VERTEX_SHADER)
-                        mem.second.assign("uint mtl_InstanceID");
-                    else if (psShader->eShaderType == HULL_SHADER)
-                        mem.second.assign("// mtl_InstanceID passed through groupID");
-                }
-            });
-        }
-
         m_StructDefinitions[""].m_Dependencies.push_back(GetInputStructName());
+        if (psContext->psDependencies)
+            psContext->psDependencies->m_SharedDependencies.push_back(GetInputStructName());
+    }
+
+    if ((psShader->eShaderType == VERTEX_SHADER || psShader->eShaderType == HULL_SHADER || psShader->eShaderType == DOMAIN_SHADER) && (psContext->flags & HLSLCC_FLAG_METAL_TESSELLATION) != 0)
+    {
+        // m_StructDefinitions is inherited between tessellation shader stages but some builtins need exceptions
+        std::for_each(m_StructDefinitions[""].m_Members.begin(), m_StructDefinitions[""].m_Members.end(), [&psShader](MemberDefinitions::value_type &mem)
+        {
+            if (mem.first == "mtl_InstanceID")
+            {
+                if (psShader->eShaderType == VERTEX_SHADER)
+                    mem.second.assign("uint mtl_InstanceID");
+                else if (psShader->eShaderType == HULL_SHADER)
+                    mem.second.assign("// mtl_InstanceID passed through groupID");
+            }
+            else if (mem.first == "mtl_VertexID")
+            {
+                if (psShader->eShaderType == VERTEX_SHADER)
+                    mem.second.assign("uint mtl_VertexID");
+                else if (psShader->eShaderType == HULL_SHADER)
+                    mem.second.assign("// mtl_VertexID generated in compute kernel");
+                else if (psShader->eShaderType == DOMAIN_SHADER)
+                    mem.second.assign("// mtl_VertexID unused");
+            }
+        });
     }
 
     if (psShader->eShaderType != COMPUTE_SHADER)
@@ -368,6 +400,8 @@ bool ToMetal::Translate()
         if (m_StructDefinitions[GetOutputStructName()].m_Members.size() > 0)
         {
             m_StructDefinitions[""].m_Dependencies.push_back(GetOutputStructName());
+            if (psContext->psDependencies)
+                psContext->psDependencies->m_SharedDependencies.push_back(GetOutputStructName());
         }
     }
 
@@ -395,7 +429,10 @@ bool ToMetal::Translate()
         case PIXEL_SHADER:
             if (psShader->sInfo.bEarlyFragmentTests)
                 bcatcstr(bodyglsl, "[[early_fragment_tests]]\n");
-            bcatcstr(bodyglsl, "fragment Mtl_FragmentOut xlatMtlMain(\n");
+            if (m_StructDefinitions[GetOutputStructName()].m_Members.size() > 0)
+                bcatcstr(bodyglsl, "fragment Mtl_FragmentOut xlatMtlMain(\n");
+            else
+                bcatcstr(bodyglsl, "fragment void xlatMtlMain(\n");
             break;
         case COMPUTE_SHADER:
             bcatcstr(bodyglsl, "kernel void computeMain(\n");
@@ -470,7 +507,7 @@ bool ToMetal::Translate()
         psContext->AddIndentation();
         bcatcstr(bodyglsl, "const uint controlPointID = (tID.x % patchInfo.numControlPointsPerPatch);\n");
         psContext->AddIndentation();
-        bcatcstr(bodyglsl, "const uint internalControlPointID = (mtl_InstanceID * (patchInfo.numControlPointsPerPatch * patchInfo.numPatches)) + tID.x;\n");
+        bcatcstr(bodyglsl, "const uint mtl_VertexID = (mtl_InstanceID * (patchInfo.numControlPointsPerPatch * patchInfo.numPatches)) + tID.x;\n");
 
         psContext->AddIndentation();
         bformata(bodyglsl, "threadgroup %s inputGroup[numPatchesInThreadGroup];\n", GetInputStructName().c_str());
@@ -491,7 +528,7 @@ bool ToMetal::Translate()
 
         // Passthrough control point phase, run the rest only once per patch
         psContext->AddIndentation();
-        bformata(bodyglsl, "input.cp[controlPointID] = vertexFunction(%svertexInput);\n", tessVertexFunctionArguments.c_str());
+        bformata(bodyglsl, "input.cp[controlPointID] = vertexFunction(%s);\n", tessVertexFunctionArguments.c_str());
 
         DoHullShaderPassthrough(psContext);
 
@@ -554,7 +591,7 @@ bool ToMetal::Translate()
                         psContext->indent++;
 
                         psContext->AddIndentation();
-                        bformata(bodyglsl, "input.cp[controlPointID] = vertexFunction(%svertexInput);\n", tessVertexFunctionArguments.c_str());
+                        bformata(bodyglsl, "input.cp[controlPointID] = vertexFunction(%s);\n", tessVertexFunctionArguments.c_str());
                     }
                     else
                     {
@@ -613,7 +650,7 @@ bool ToMetal::Translate()
         if (hasControlPoint)
         {
             psContext->AddIndentation();
-            bcatcstr(bodyglsl, "controlPoints[internalControlPointID] = output;\n");
+            bcatcstr(bodyglsl, "controlPoints[mtl_VertexID] = output;\n");
         }
 
         psContext->AddIndentation();

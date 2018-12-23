@@ -374,12 +374,7 @@ static void printImmediate32(HLSLCrossCompilerContext *psContext, uint32_t value
         case SVT_INT:
         case SVT_INT16:
         case SVT_INT12:
-            // Adreno bug (happens only on android 4.* GLES3) casting unsigned representation of negative values to signed int
-            // results in undefined value/fails to link shader, need to print as signed decimal
-            if (value > 0x7fffffff && psContext->psShader->eTargetLanguage == LANG_ES_300)
-                bformata(glsl, "%i", (int32_t)value);
-            // Need special handling for anything >= uint 0x3fffffff
-            else if (value > 0x3ffffffe)
+            if (value > 0x3ffffffe)
             {
                 if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
                     bformata(glsl, "int(0x%Xu)", value);
@@ -439,9 +434,16 @@ void ToGLSL::DeclareDynamicIndexWrapper(const char* psName, SHADER_VARIABLE_CLAS
     if (m_FunctionDefinitions.find(suffix) == m_FunctionDefinitions.end())
     {
         m_FunctionDefinitions.insert(std::make_pair(suffix, "#define UNITY_DYNAMIC_INDEX_ES2 0\n"));
+        m_FunctionDefinitionsOrder.push_back(suffix);
     }
 
     bcatcstr(glsl, "\n");
+
+    char name[256];
+    if ((eClass == SVC_MATRIX_COLUMNS || eClass == SVC_MATRIX_ROWS) && psContext->flags & HLSLCC_FLAG_TRANSLATE_MATRICES)
+        sprintf(name, HLSLCC_TRANSLATE_MATRIX_FORMAT_STRING "%s", ui32Rows, ui32Columns, psName);
+    else
+        memcpy(name, psName, strlen(psName) + 1);
 
     if (eClass == SVC_STRUCT)
     {
@@ -474,9 +476,9 @@ void ToGLSL::DeclareDynamicIndexWrapper(const char* psName, SHADER_VARIABLE_CLAS
     }
     bformata(glsl, "(int i){\n");
     bcatcstr(glsl, "#if UNITY_DYNAMIC_INDEX_ES2\n");
-    bformata(glsl, "    return %s[i];\n", psName);
+    bformata(glsl, "    return %s[i];\n", name);
     bcatcstr(glsl, "#else\n");
-    bformata(glsl, "#define d_ar %s\n", psName);
+    bformata(glsl, "#define d_ar %s\n", name);
     bformata(glsl, "    if (i <= 0) return d_ar[0];");
 
     // Let's draw a line somewhere with this workaround
@@ -489,6 +491,7 @@ void ToGLSL::DeclareDynamicIndexWrapper(const char* psName, SHADER_VARIABLE_CLAS
     bcatcstr(glsl, "#endif\n");
     bformata(glsl, "}\n\n");
     m_FunctionDefinitions.insert(std::make_pair(psName, ""));
+    m_FunctionDefinitionsOrder.push_back(psName);
 }
 
 void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperand, uint32_t ui32TOFlag, uint32_t* pui32IgnoreSwizzle, uint32_t ui32CompMask, int *piRebase)
@@ -578,11 +581,17 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
         {
             if (CanDoDirectCast(psContext, eType, requestedType) || !HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
             {
-                bformata(glsl, "%s(", GetConstructorForType(psContext, requestedType, requestedComponents, false));
-                numParenthesis++;
                 hasCtor = 1;
                 if (eType == SVT_BOOL)
+                {
                     needsBoolUpscale = 1;
+                    // make sure to wrap the whole thing in parens so the upscale
+                    // multiply only applies to the bool
+                    bcatcstr(glsl, "(");
+                    numParenthesis++;
+                }
+                bformata(glsl, "%s(", GetConstructorForType(psContext, requestedType, requestedComponents, false));
+                numParenthesis++;
             }
             else
             {
@@ -756,9 +765,7 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
         case OPERAND_TYPE_OUTPUT_DEPTH:
             if (psContext->psShader->eTargetLanguage == LANG_ES_100 && !psContext->EnableExtension("GL_EXT_frag_depth"))
             {
-                bcatcstr(psContext->extensions, "#ifdef GL_EXT_frag_depth\n");
                 bcatcstr(psContext->extensions, "#define gl_FragDepth gl_FragDepthEXT\n");
-                bcatcstr(psContext->extensions, "#endif\n");
             }
         // fall through
         case OPERAND_TYPE_OUTPUT_DEPTH_GREATER_EQUAL:
@@ -770,6 +777,13 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
         case OPERAND_TYPE_TEMP:
         {
             SHADER_VARIABLE_TYPE eTempType = psOperand->GetDataType(psContext);
+
+            if (psOperand->eSpecialName == NAME_UNDEFINED && psOperand->specialName.length())
+            {
+                bcatcstr(glsl, psOperand->specialName.c_str());
+                break;
+            }
+
             bcatcstr(glsl, HLSLCC_TEMP_PREFIX);
             ASSERT(psOperand->ui32RegisterNumber < 0x10000); // Sanity check after temp splitting.
             switch (eTempType)
@@ -1160,7 +1174,7 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
                         if (((psVarType->Class == SVC_MATRIX_COLUMNS) || (psVarType->Class == SVC_MATRIX_ROWS)) && (psVarType->Elements > 1) && ((psContext->flags & HLSLCC_FLAG_TRANSLATE_MATRICES) == 0))
                         {
                             // Special handling for old matrix arrays
-                            bformata(glsl, "%%s / 4%s", squareBrackets[squareBracketType][0], fullIndexOss.str().c_str(), squareBrackets[squareBracketType][1]);
+                            bformata(glsl, "%s%s / 4%s", squareBrackets[squareBracketType][0], fullIndexOss.str().c_str(), squareBrackets[squareBracketType][1]);
                             bformata(glsl, "%s%s %% 4%s", squareBrackets[squareBracketType][0], fullIndexOss.str().c_str(), squareBrackets[squareBracketType][1]);
                         }
                         else // This path is atm the default
@@ -1258,7 +1272,7 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
         }
         case OPERAND_TYPE_IMMEDIATE_CONSTANT_BUFFER:
         {
-            if (psContext->IsVulkan())
+            if (psContext->IsVulkan() || psContext->IsSwitch())
             {
                 bformata(glsl, "ImmCB_%d", psContext->currentPhase);
                 TranslateOperandIndex(psOperand, 0);
@@ -1352,7 +1366,20 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
         }
         case OPERAND_TYPE_INPUT_THREAD_ID_IN_GROUP_FLATTENED://SV_GroupIndex
         {
-            bcatcstr(glsl, "gl_LocalInvocationIndex");
+            if (requestedComponents > 1 && !hasCtor)
+            {
+                bcatcstr(glsl, GetConstructorForType(psContext, eType, requestedComponents, false));
+                bcatcstr(glsl, "(");
+                numParenthesis++;
+                hasCtor = 1;
+            }
+
+            for (uint32_t i = 0; i < requestedComponents; i++)
+            {
+                bcatcstr(glsl, "gl_LocalInvocationIndex");
+                if (i < requestedComponents - 1)
+                    bcatcstr(glsl, ", ");
+            }
             *pui32IgnoreSwizzle = 1; // No swizzle meaningful for scalar.
             break;
         }
@@ -1458,9 +1485,9 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
                     break;
                 case NAME_IS_FRONT_FACE:
                     if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
-                        bcatcstr(glsl, "(gl_FrontFacing ? 0xffffffffu : uint(0))");
+                        bcatcstr(glsl, "(gl_FrontFacing ? 0xffffffffu : uint(0))"); // Old ES3.0 Adrenos treat 0u as const int
                     else
-                        bcatcstr(glsl, "(gl_FrontFacing ? int(1) : int(0))");
+                        bcatcstr(glsl, "(gl_FrontFacing ? 1 : 0)");
                     *pui32IgnoreSwizzle = 1;
                     break;
                 case NAME_PRIMITIVE_ID:
@@ -1546,9 +1573,11 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
             if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
                 bcatcstr(glsl, ") * int(0xffffffffu)");
             else
-                bcatcstr(glsl, ") * int(0xffffffff)");
+                bcatcstr(glsl, ") * int(0xffff)");  // GLSL ES 2 spec: high precision ints are guaranteed to have a range of (-2^16, 2^16)
         }
 
+        numParenthesis--;
+        bcatcstr(glsl, ")");
         numParenthesis--;
     }
 
