@@ -1992,6 +1992,11 @@ void ToGLSL::TranslateDeclaration(const Declaration* psDecl)
                     bcatcstr(GetEarlyMain(psContext), "vec4 hlslcc_FragCoord = vec4(gl_FragCoord.xyz, 1.0/gl_FragCoord.w);\n");
                     break;
                 }
+                case NAME_RENDER_TARGET_ARRAY_INDEX:
+                {
+                    AddBuiltinInput(psDecl, "gl_Layer");
+                    break;
+                }
                 default:
                     ASSERT(0);
                     break;
