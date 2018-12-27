@@ -5,17 +5,17 @@
 
 enum SHADER_PHASE_TYPE
 {
-	SHADER_PHASE_INVALID = -1,
-	MAIN_PHASE = 0,
-	HS_GLOBAL_DECL_PHASE = 1,
-	HS_CTRL_POINT_PHASE = 2,
-	HS_FORK_PHASE = 3,
-	HS_JOIN_PHASE = 4
+    SHADER_PHASE_INVALID = -1,
+    MAIN_PHASE = 0,
+    HS_GLOBAL_DECL_PHASE = 1,
+    HS_CTRL_POINT_PHASE = 2,
+    HS_FORK_PHASE = 3,
+    HS_JOIN_PHASE = 4
 };
 
 static SHADER_TYPE DecodeShaderType(uint32_t ui32Token)
 {
-	return (SHADER_TYPE)((ui32Token & 0xffff0000) >> 16);
+    return (SHADER_TYPE)((ui32Token & 0xffff0000) >> 16);
 }
 
 static uint32_t DecodeProgramMajorVersion(uint32_t ui32Token)
@@ -51,25 +51,24 @@ static EXTENDED_OPCODE_TYPE DecodeExtendedOpcodeType(uint32_t ui32Token)
     return (EXTENDED_OPCODE_TYPE)(ui32Token & 0x0000003f);
 }
 
-
 static RESOURCE_RETURN_TYPE DecodeResourceReturnType(uint32_t ui32Coord, uint32_t ui32Token)
 {
-    return (RESOURCE_RETURN_TYPE)((ui32Token>>(ui32Coord * 4))&0xF);
+    return (RESOURCE_RETURN_TYPE)((ui32Token >> (ui32Coord * 4)) & 0xF);
 }
 
 static RESOURCE_RETURN_TYPE DecodeExtendedResourceReturnType(uint32_t ui32Coord, uint32_t ui32Token)
 {
-    return (RESOURCE_RETURN_TYPE)((ui32Token>>(ui32Coord * 4 + 6))&0xF);
+    return (RESOURCE_RETURN_TYPE)((ui32Token >> (ui32Coord * 4 + 6)) & 0xF);
 }
 
 enum OPCODE_TYPE
 {
     //For DX9
-	OPCODE_POW = -6,
-	OPCODE_DP2ADD = -5,
-	OPCODE_LRP = -4,
-	OPCODE_ENDREP = -3,
-	OPCODE_REP = -2,
+    OPCODE_POW = -6,
+    OPCODE_DP2ADD = -5,
+    OPCODE_LRP = -4,
+    OPCODE_ENDREP = -3,
+    OPCODE_REP = -2,
     OPCODE_SPECIAL_DCL_IMMCONST = -1,
 
     OPCODE_ADD,
@@ -183,7 +182,7 @@ enum OPCODE_TYPE
 // -----------------------------------------------
 
     OPCODE_RESERVED_10,
-    
+
 // ---------- DX 10.1 op codes---------------------
 
     OPCODE_LOD,
@@ -234,7 +233,7 @@ enum OPCODE_TYPE
     OPCODE_DCL_FUNCTION_BODY,
     OPCODE_DCL_FUNCTION_TABLE,
     OPCODE_DCL_INTERFACE,
-    
+
     OPCODE_DCL_INPUT_CONTROL_POINT_COUNT,
     OPCODE_DCL_OUTPUT_CONTROL_POINT_COUNT,
     OPCODE_DCL_TESS_DOMAIN,
@@ -278,9 +277,9 @@ enum OPCODE_TYPE
     OPCODE_IMM_ATOMIC_IMAX,
     OPCODE_IMM_ATOMIC_IMIN,
     OPCODE_IMM_ATOMIC_UMAX,
-    OPCODE_IMM_ATOMIC_UMIN,   
+    OPCODE_IMM_ATOMIC_UMIN,
     OPCODE_SYNC,
-    
+
     OPCODE_DADD,
     OPCODE_DMAX,
     OPCODE_DMIN,
@@ -297,7 +296,7 @@ enum OPCODE_TYPE
     OPCODE_EVAL_SNAPPED,
     OPCODE_EVAL_SAMPLE_INDEX,
     OPCODE_EVAL_CENTROID,
-    
+
     OPCODE_DCL_GS_INSTANCE_COUNT,
 
     OPCODE_ABORT,
@@ -343,14 +342,14 @@ typedef enum
 
 static OPERAND_INDEX_DIMENSION DecodeOperandIndexDimension(uint32_t ui32Token)
 {
-	return (OPERAND_INDEX_DIMENSION)((ui32Token & 0x00300000) >> 20);
+    return (OPERAND_INDEX_DIMENSION)((ui32Token & 0x00300000) >> 20);
 }
 
 typedef enum OPERAND_TYPE
 {
     OPERAND_TYPE_SPECIAL_LOOPCOUNTER = -10,
-	OPERAND_TYPE_SPECIAL_IMMCONSTINT = -9,
-	OPERAND_TYPE_SPECIAL_TEXCOORD = -8,
+    OPERAND_TYPE_SPECIAL_IMMCONSTINT = -9,
+    OPERAND_TYPE_SPECIAL_TEXCOORD = -8,
     OPERAND_TYPE_SPECIAL_POSITION = -7,
     OPERAND_TYPE_SPECIAL_FOG = -6,
     OPERAND_TYPE_SPECIAL_POINTSIZE = -5,
@@ -363,25 +362,25 @@ typedef enum OPERAND_TYPE
     OPERAND_TYPE_OUTPUT         = 2,  // General Output Register File
     OPERAND_TYPE_INDEXABLE_TEMP = 3,  // Temporary Register File (indexable)
     OPERAND_TYPE_IMMEDIATE32    = 4,  // 32bit/component immediate value(s)
-                                          // If for example, operand token bits
-                                          // [01:00]==OPERAND_4_COMPONENT,
-                                          // this means that the operand type:
-                                          // OPERAND_TYPE_IMMEDIATE32
-                                          // results in 4 additional 32bit
-                                          // DWORDS present for the operand.
+    // If for example, operand token bits
+    // [01:00]==OPERAND_4_COMPONENT,
+    // this means that the operand type:
+    // OPERAND_TYPE_IMMEDIATE32
+    // results in 4 additional 32bit
+    // DWORDS present for the operand.
     OPERAND_TYPE_IMMEDIATE64    = 5,  // 64bit/comp.imm.val(s)HI:LO
     OPERAND_TYPE_SAMPLER        = 6,  // Reference to sampler state
     OPERAND_TYPE_RESOURCE       = 7,  // Reference to memory resource (e.g. texture)
-    OPERAND_TYPE_CONSTANT_BUFFER= 8,  // Reference to constant buffer
-    OPERAND_TYPE_IMMEDIATE_CONSTANT_BUFFER= 9,  // Reference to immediate constant buffer
+    OPERAND_TYPE_CONSTANT_BUFFER = 8,  // Reference to constant buffer
+    OPERAND_TYPE_IMMEDIATE_CONSTANT_BUFFER = 9,  // Reference to immediate constant buffer
     OPERAND_TYPE_LABEL          = 10, // Label
     OPERAND_TYPE_INPUT_PRIMITIVEID = 11, // Input primitive ID
     OPERAND_TYPE_OUTPUT_DEPTH   = 12, // Output Depth
     OPERAND_TYPE_NULL           = 13, // Null register, used to discard results of operations
-                                               // Below Are operands new in DX 10.1
+    // Below Are operands new in DX 10.1
     OPERAND_TYPE_RASTERIZER     = 14, // DX10.1 Rasterizer register, used to denote the depth/stencil and render target resources
     OPERAND_TYPE_OUTPUT_COVERAGE_MASK = 15, // DX10.1 PS output MSAA coverage mask (scalar)
-                                               // Below Are operands new in DX 11
+                                            // Below Are operands new in DX 11
     OPERAND_TYPE_STREAM         = 16, // Reference to GS stream output resource
     OPERAND_TYPE_FUNCTION_BODY  = 17, // Reference to a function definition
     OPERAND_TYPE_FUNCTION_TABLE = 18, // Reference to a set of functions used by a class
@@ -411,30 +410,30 @@ typedef enum OPERAND_TYPE
 
 static OPERAND_TYPE DecodeOperandType(uint32_t ui32Token)
 {
-	return (OPERAND_TYPE)((ui32Token & 0x000ff000) >> 12);
+    return (OPERAND_TYPE)((ui32Token & 0x000ff000) >> 12);
 }
 
 static SPECIAL_NAME DecodeOperandSpecialName(uint32_t ui32Token)
 {
-	return (SPECIAL_NAME)(ui32Token & 0x0000ffff);
+    return (SPECIAL_NAME)(ui32Token & 0x0000ffff);
 }
 
 typedef enum OPERAND_INDEX_REPRESENTATION
 {
     OPERAND_INDEX_IMMEDIATE32               = 0, // Extra DWORD
     OPERAND_INDEX_IMMEDIATE64               = 1, // 2 Extra DWORDs
-                                                     //   (HI32:LO32)
+    //   (HI32:LO32)
     OPERAND_INDEX_RELATIVE                  = 2, // Extra operand
     OPERAND_INDEX_IMMEDIATE32_PLUS_RELATIVE = 3, // Extra DWORD followed by
-                                                     //   extra operand
+    //   extra operand
     OPERAND_INDEX_IMMEDIATE64_PLUS_RELATIVE = 4, // 2 Extra DWORDS
-                                                     //   (HI32:LO32) followed
-                                                     //   by extra operand
+    //   (HI32:LO32) followed
+    //   by extra operand
 } OPERAND_INDEX_REPRESENTATION;
 
 static OPERAND_INDEX_REPRESENTATION DecodeOperandIndexRepresentation(uint32_t ui32Dimension, uint32_t ui32Token)
 {
-	return (OPERAND_INDEX_REPRESENTATION)((ui32Token & (0x3<<(22+3*((ui32Dimension)&3)))) >> (22+3*((ui32Dimension)&3)));
+    return (OPERAND_INDEX_REPRESENTATION)((ui32Token & (0x3 << (22 + 3 * ((ui32Dimension) & 3)))) >> (22 + 3 * ((ui32Dimension) & 3)));
 }
 
 typedef enum OPERAND_NUM_COMPONENTS
@@ -447,7 +446,7 @@ typedef enum OPERAND_NUM_COMPONENTS
 
 static OPERAND_NUM_COMPONENTS DecodeOperandNumComponents(uint32_t ui32Token)
 {
-	return (OPERAND_NUM_COMPONENTS)(ui32Token & 0x00000003);
+    return (OPERAND_NUM_COMPONENTS)(ui32Token & 0x00000003);
 }
 
 typedef enum OPERAND_4_COMPONENT_SELECTION_MODE
@@ -459,7 +458,7 @@ typedef enum OPERAND_4_COMPONENT_SELECTION_MODE
 
 static OPERAND_4_COMPONENT_SELECTION_MODE DecodeOperand4CompSelMode(uint32_t ui32Token)
 {
-	return (OPERAND_4_COMPONENT_SELECTION_MODE)((ui32Token & 0x0000000c) >> 2);
+    return (OPERAND_4_COMPONENT_SELECTION_MODE)((ui32Token & 0x0000000c) >> 2);
 }
 
 #define OPERAND_4_COMPONENT_MASK_X      0x00000001
@@ -474,17 +473,17 @@ static OPERAND_4_COMPONENT_SELECTION_MODE DecodeOperand4CompSelMode(uint32_t ui3
 
 static uint32_t DecodeOperand4CompMask(uint32_t ui32Token)
 {
-	return (uint32_t)((ui32Token & 0x000000f0) >> 4);
+    return (uint32_t)((ui32Token & 0x000000f0) >> 4);
 }
 
 static uint32_t DecodeOperand4CompSwizzle(uint32_t ui32Token)
 {
-	return (uint32_t)((ui32Token & 0x00000ff0) >> 4);
+    return (uint32_t)((ui32Token & 0x00000ff0) >> 4);
 }
 
 static uint32_t DecodeOperand4CompSel1(uint32_t ui32Token)
 {
-	return (uint32_t)((ui32Token & 0x00000030) >> 4);
+    return (uint32_t)((ui32Token & 0x00000030) >> 4);
 }
 
 #define OPERAND_4_COMPONENT_X      0
@@ -492,7 +491,7 @@ static uint32_t DecodeOperand4CompSel1(uint32_t ui32Token)
 #define OPERAND_4_COMPONENT_Z      2
 #define OPERAND_4_COMPONENT_W      3
 
-static const uint32_t NO_SWIZZLE = (( (OPERAND_4_COMPONENT_X) | (OPERAND_4_COMPONENT_Y<<2) | (OPERAND_4_COMPONENT_Z << 4) | (OPERAND_4_COMPONENT_W << 6))/*<<4*/);
+static const uint32_t NO_SWIZZLE = (((OPERAND_4_COMPONENT_X) | (OPERAND_4_COMPONENT_Y << 2) | (OPERAND_4_COMPONENT_Z << 4) | (OPERAND_4_COMPONENT_W << 6)) /*<<4*/);
 
 static const uint32_t XXXX_SWIZZLE = (((OPERAND_4_COMPONENT_X) | (OPERAND_4_COMPONENT_X << 2) | (OPERAND_4_COMPONENT_X << 4) | (OPERAND_4_COMPONENT_X << 6)));
 static const uint32_t YYYY_SWIZZLE = (((OPERAND_4_COMPONENT_Y) | (OPERAND_4_COMPONENT_Y << 2) | (OPERAND_4_COMPONENT_Y << 4) | (OPERAND_4_COMPONENT_Y << 6)));
@@ -501,7 +500,7 @@ static const uint32_t WWWW_SWIZZLE = (((OPERAND_4_COMPONENT_W) | (OPERAND_4_COMP
 
 static uint32_t DecodeOperand4CompSwizzleSource(uint32_t ui32Token, uint32_t comp)
 {
-    return (uint32_t)(((ui32Token)>>(4+2*((comp)&3)))&3);
+    return (uint32_t)(((ui32Token) >> (4 + 2 * ((comp) & 3))) & 3);
 }
 
 typedef enum RESOURCE_DIMENSION
@@ -523,12 +522,12 @@ typedef enum RESOURCE_DIMENSION
 
 static RESOURCE_DIMENSION DecodeResourceDimension(uint32_t ui32Token)
 {
-	return (RESOURCE_DIMENSION)((ui32Token & 0x0000f800) >> 11);
+    return (RESOURCE_DIMENSION)((ui32Token & 0x0000f800) >> 11);
 }
 
 static RESOURCE_DIMENSION DecodeExtendedResourceDimension(uint32_t ui32Token)
 {
-	return (RESOURCE_DIMENSION)((ui32Token & 0x000007C0) >> 6);
+    return (RESOURCE_DIMENSION)((ui32Token & 0x000007C0) >> 6);
 }
 
 typedef enum INSTRUCTION_TEST_BOOLEAN
@@ -539,7 +538,7 @@ typedef enum INSTRUCTION_TEST_BOOLEAN
 
 static INSTRUCTION_TEST_BOOLEAN DecodeInstrTestBool(uint32_t ui32Token)
 {
-	return (INSTRUCTION_TEST_BOOLEAN)((ui32Token & 0x00040000) >> 18);
+    return (INSTRUCTION_TEST_BOOLEAN)((ui32Token & 0x00040000) >> 18);
 }
 
 static uint32_t DecodeIsOperandExtended(uint32_t ui32Token)
@@ -555,7 +554,7 @@ typedef enum EXTENDED_OPERAND_TYPE
 
 static EXTENDED_OPERAND_TYPE DecodeExtendedOperandType(uint32_t ui32Token)
 {
-	return (EXTENDED_OPERAND_TYPE)(ui32Token & 0x0000003f);
+    return (EXTENDED_OPERAND_TYPE)(ui32Token & 0x0000003f);
 }
 
 typedef enum OPERAND_MODIFIER
@@ -568,28 +567,27 @@ typedef enum OPERAND_MODIFIER
 
 static OPERAND_MODIFIER DecodeExtendedOperandModifier(uint32_t ui32Token)
 {
-	return (OPERAND_MODIFIER)((ui32Token & 0x00003fc0) >> 6);
+    return (OPERAND_MODIFIER)((ui32Token & 0x00003fc0) >> 6);
 }
 
-static const uint32_t GLOBAL_FLAG_REFACTORING_ALLOWED = (1<<11);
-static const uint32_t GLOBAL_FLAG_ENABLE_DOUBLE_PRECISION_FLOAT_OPS = (1<<12);
-static const uint32_t GLOBAL_FLAG_FORCE_EARLY_DEPTH_STENCIL = (1<<13);
-static const uint32_t GLOBAL_FLAG_ENABLE_RAW_AND_STRUCTURED_BUFFERS = (1<<14);
-static const uint32_t GLOBAL_FLAG_SKIP_OPTIMIZATION = (1<<15);
-static const uint32_t GLOBAL_FLAG_ENABLE_MINIMUM_PRECISION = (1<<16);
-static const uint32_t GLOBAL_FLAG_ENABLE_DOUBLE_EXTENSIONS = (1<<17);
-static const uint32_t GLOBAL_FLAG_ENABLE_SHADER_EXTENSIONS = (1<<18);
+static const uint32_t GLOBAL_FLAG_REFACTORING_ALLOWED = (1 << 11);
+static const uint32_t GLOBAL_FLAG_ENABLE_DOUBLE_PRECISION_FLOAT_OPS = (1 << 12);
+static const uint32_t GLOBAL_FLAG_FORCE_EARLY_DEPTH_STENCIL = (1 << 13);
+static const uint32_t GLOBAL_FLAG_ENABLE_RAW_AND_STRUCTURED_BUFFERS = (1 << 14);
+static const uint32_t GLOBAL_FLAG_SKIP_OPTIMIZATION = (1 << 15);
+static const uint32_t GLOBAL_FLAG_ENABLE_MINIMUM_PRECISION = (1 << 16);
+static const uint32_t GLOBAL_FLAG_ENABLE_DOUBLE_EXTENSIONS = (1 << 17);
+static const uint32_t GLOBAL_FLAG_ENABLE_SHADER_EXTENSIONS = (1 << 18);
 
 static uint32_t DecodeGlobalFlags(uint32_t ui32Token)
 {
-	return (uint32_t)(ui32Token & 0x00fff800);
+    return (uint32_t)(ui32Token & 0x00fff800);
 }
 
 static INTERPOLATION_MODE DecodeInterpolationMode(uint32_t ui32Token)
 {
-	return (INTERPOLATION_MODE)((ui32Token & 0x00007800) >> 11);
+    return (INTERPOLATION_MODE)((ui32Token & 0x00007800) >> 11);
 }
-
 
 typedef enum PRIMITIVE_TOPOLOGY
 {
@@ -609,7 +607,7 @@ typedef enum PRIMITIVE_TOPOLOGY
 
 static PRIMITIVE_TOPOLOGY DecodeGSOutputPrimitiveTopology(uint32_t ui32Token)
 {
-	return (PRIMITIVE_TOPOLOGY)((ui32Token & 0x0001f800) >> 11);
+    return (PRIMITIVE_TOPOLOGY)((ui32Token & 0x0001f800) >> 11);
 }
 
 typedef enum PRIMITIVE
@@ -657,22 +655,22 @@ typedef enum PRIMITIVE
 
 static PRIMITIVE DecodeGSInputPrimitive(uint32_t ui32Token)
 {
-	return (PRIMITIVE)((ui32Token & 0x0001f800) >> 11);
+    return (PRIMITIVE)((ui32Token & 0x0001f800) >> 11);
 }
 
 static TESSELLATOR_PARTITIONING DecodeTessPartitioning(uint32_t ui32Token)
 {
-	return (TESSELLATOR_PARTITIONING)((ui32Token & 0x00003800) >> 11);
+    return (TESSELLATOR_PARTITIONING)((ui32Token & 0x00003800) >> 11);
 }
 
 static TESSELLATOR_DOMAIN DecodeTessDomain(uint32_t ui32Token)
 {
-	return (TESSELLATOR_DOMAIN)((ui32Token & 0x00001800) >> 11);
+    return (TESSELLATOR_DOMAIN)((ui32Token & 0x00001800) >> 11);
 }
 
 static TESSELLATOR_OUTPUT_PRIMITIVE DecodeTessOutPrim(uint32_t ui32Token)
 {
-	return (TESSELLATOR_OUTPUT_PRIMITIVE)((ui32Token & 0x00003800) >> 11);
+    return (TESSELLATOR_OUTPUT_PRIMITIVE)((ui32Token & 0x00003800) >> 11);
 }
 
 static const uint32_t SYNC_THREADS_IN_GROUP = 0x00000800;
@@ -682,19 +680,19 @@ static const uint32_t SYNC_UNORDERED_ACCESS_VIEW_MEMORY_GLOBAL = 0x00004000;
 
 static uint32_t DecodeSyncFlags(uint32_t ui32Token)
 {
-	return ui32Token & 0x00007800;
+    return ui32Token & 0x00007800;
 }
 
 // The number of types that implement this interface
 static uint32_t DecodeInterfaceTableLength(uint32_t ui32Token)
 {
-	return (uint32_t)((ui32Token & 0x0000ffff) >> 0);
+    return (uint32_t)((ui32Token & 0x0000ffff) >> 0);
 }
 
 // The number of interfaces that are defined in this array.
 static uint32_t DecodeInterfaceArrayLength(uint32_t ui32Token)
 {
-	return (uint32_t)((ui32Token & 0xffff0000) >> 16);
+    return (uint32_t)((ui32Token & 0xffff0000) >> 16);
 }
 
 typedef enum CUSTOMDATA_CLASS
@@ -708,7 +706,7 @@ typedef enum CUSTOMDATA_CLASS
 
 static CUSTOMDATA_CLASS DecodeCustomDataClass(uint32_t ui32Token)
 {
-	return (CUSTOMDATA_CLASS)((ui32Token & 0xfffff800) >> 11);
+    return (CUSTOMDATA_CLASS)((ui32Token & 0xfffff800) >> 11);
 }
 
 static uint32_t DecodeInstructionSaturate(uint32_t ui32Token)
@@ -718,8 +716,8 @@ static uint32_t DecodeInstructionSaturate(uint32_t ui32Token)
 
 typedef enum OPERAND_MIN_PRECISION
 {
-    OPERAND_MIN_PRECISION_DEFAULT    = 0, // Default precision 
-                                            // for the shader model
+    OPERAND_MIN_PRECISION_DEFAULT    = 0, // Default precision
+                                          // for the shader model
     OPERAND_MIN_PRECISION_FLOAT_16   = 1, // Min 16 bit/component float
     OPERAND_MIN_PRECISION_FLOAT_2_8  = 2, // Min 10(2.8)bit/comp. float
     OPERAND_MIN_PRECISION_SINT_16    = 4, // Min 16 bit/comp. signed integer
@@ -733,7 +731,7 @@ static uint32_t DecodeOperandMinPrecision(uint32_t ui32Token)
 
 static uint32_t DecodeOutputControlPointCount(uint32_t ui32Token)
 {
-	return ((ui32Token & 0x0001f800) >> 11);
+    return ((ui32Token & 0x0001f800) >> 11);
 }
 
 typedef enum IMMEDIATE_ADDRESS_OFFSET_COORD
@@ -749,7 +747,7 @@ typedef enum IMMEDIATE_ADDRESS_OFFSET_COORD
 
 static uint32_t DecodeImmediateAddressOffset(IMMEDIATE_ADDRESS_OFFSET_COORD eCoord, uint32_t ui32Token)
 {
-    return ((((ui32Token)&IMMEDIATE_ADDRESS_OFFSET_MASK(eCoord))>>(IMMEDIATE_ADDRESS_OFFSET_SHIFT(eCoord))));
+    return ((((ui32Token) & IMMEDIATE_ADDRESS_OFFSET_MASK(eCoord)) >> (IMMEDIATE_ADDRESS_OFFSET_SHIFT(eCoord))));
 }
 
 // UAV access scope flags
@@ -758,7 +756,6 @@ static uint32_t DecodeAccessCoherencyFlags(uint32_t ui32Token)
 {
     return ui32Token & 0x00010000;
 }
-
 
 typedef enum RESINFO_RETURN_TYPE
 {
@@ -774,15 +771,14 @@ static RESINFO_RETURN_TYPE DecodeResInfoReturnType(uint32_t ui32Token)
 
 typedef enum SB_SAMPLER_MODE
 {
-	D3D10_SB_SAMPLER_MODE_DEFAULT = 0,
-	D3D10_SB_SAMPLER_MODE_COMPARISON = 1,
-	D3D10_SB_SAMPLER_MODE_MONO = 2,
+    D3D10_SB_SAMPLER_MODE_DEFAULT = 0,
+    D3D10_SB_SAMPLER_MODE_COMPARISON = 1,
+    D3D10_SB_SAMPLER_MODE_MONO = 2,
 } SB_SAMPLER_MODE;
 
 static SB_SAMPLER_MODE DecodeSamplerMode(uint32_t ui32Token)
 {
-	return (SB_SAMPLER_MODE)((ui32Token & 0x00001800) >> 11);
+    return (SB_SAMPLER_MODE)((ui32Token & 0x00001800) >> 11);
 }
-
 
 #endif

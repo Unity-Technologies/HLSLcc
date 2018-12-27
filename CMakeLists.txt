@@ -50,9 +50,9 @@ target_include_directories(hlslcc
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/cbstring>
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/src/internal_includes>)
 set_target_properties(hlslcc PROPERTIES
-    CXX_STANDARD 11
-    CXX_STANDARD_REQUIRED ON
-    PUBLIC_HEADERS ${HLSLCC_HDRS})
+    "CXX_STANDARD" "11"
+    "CXX_STANDARD_REQUIRED" "ON"
+    "PUBLIC_HEADERS" "${HLSLCC_HDRS}")
 install(TARGETS hlslcc
     EXPORT hlslccConfig
     ARCHIVE DESTINATION lib
