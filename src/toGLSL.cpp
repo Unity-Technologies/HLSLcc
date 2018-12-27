@@ -524,9 +524,9 @@ static void DoHullShaderPassthrough(HLSLCrossCompilerContext *psContext)
 
         psContext->AddIndentation();
         if (ui32NumComponents > 1)
-            bformata(glsl, "layout(location = %d) out %s%s%d %s%s%d[];\n", inLoc, prec, Type, ui32NumComponents, psContext->outputPrefix, psSig->semanticName.c_str(), psSig->ui32SemanticIndex);
+            bformata(glsl, "layout(location = %d) out %s%s%d %s%s%d[];\n", outLoc, prec, Type, ui32NumComponents, psContext->outputPrefix, psSig->semanticName.c_str(), psSig->ui32SemanticIndex);
         else
-            bformata(glsl, "layout(location = %d) out %s%s %s%s%d[];\n", inLoc, prec, Type, psContext->outputPrefix, psSig->semanticName.c_str(), psSig->ui32SemanticIndex);
+            bformata(glsl, "layout(location = %d) out %s%s %s%s%d[];\n", outLoc, prec, Type, psContext->outputPrefix, psSig->semanticName.c_str(), psSig->ui32SemanticIndex);
     }
 
     psContext->AddIndentation();
