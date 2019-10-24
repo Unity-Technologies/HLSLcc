@@ -1053,28 +1053,22 @@ void ToGLSL::UseExtraFunctionDependency(const std::string &name)
     }
     else if (name == "op_modi")
     {
-        bformata(code, "const int BITWISE_BIT_COUNT = 32;\nint op_modi(int x, int y) { return x - y * (x / y); }\n");
+        bformata(code, "int op_modi(int x, int y) { return x - y * (x / y); }\n");
         PrintComponentWrapper2(code, "op_modi", "ivec2", "ivec3", "ivec4");
     }
     else if (name == "op_and")
     {
-        UseExtraFunctionDependency("op_modi");
-
-        bformata(code, "int op_and(int a, int b) { int result = 0; int n = 1; for (int i = 0; i < BITWISE_BIT_COUNT; i++) { if ((op_modi(a, 2) != 0) && (op_modi(b, 2) != 0)) { result += n; } a = a / 2; b = b / 2; n = n * 2; if (!(a > 0 && b > 0)) { break; } } return result; }\n");
+        bformata(code, "int op_and(int a, int b) { int result = (a < 0 && b < 0) ? -2147483648 : 0; if (a < 0) a -= -2147483648; if (b < 0) b -= -2147483648; int n = 1; ivec2 ab = ivec2(a, b); for (int i = 0; i < 31; i++) { ivec2 ab_div = ab / 2; ivec2 ab_rem = ab - ab_div*2; result += n * ab_rem.x * ab_rem.y; ab = ab_div; n += n; } return result; }\n");
         PrintComponentWrapper2(code, "op_and", "ivec2", "ivec3", "ivec4");
     }
     else if (name == "op_or")
     {
-        UseExtraFunctionDependency("op_modi");
-
-        bformata(code, "int op_or(int a, int b) { int result = 0; int n = 1; for (int i = 0; i < BITWISE_BIT_COUNT; i++) { if ((op_modi(a, 2) != 0) || (op_modi(b, 2) != 0)) { result += n; } a = a / 2; b = b / 2; n = n * 2; if (!(a > 0 || b > 0)) { break; } } return result; }\n");
+        bformata(code, "int op_or(int a, int b) { int result = (a < 0 || b < 0) ? -2147483648 : 0; if (a < 0) a -= -2147483648; if (b < 0) b -= -2147483648; int n = 1; ivec2 ab = ivec2(a, b); for (int i = 0; i < 31; i++) { ivec2 ab_div = ab / 2; ivec2 ab_rem = ab - ab_div*2; result += n * (ab_rem.x + ab_rem.y - ab_rem.x*ab_rem.y); ab = ab_div; n += n; } return result; }\n");
         PrintComponentWrapper2(code, "op_or", "ivec2", "ivec3", "ivec4");
     }
     else if (name == "op_xor")
     {
-        UseExtraFunctionDependency("op_and");
-
-        bformata(code, "int op_xor(int a, int b) { return (a + b - 2 * op_and(a, b)); }\n");
+        bformata(code, "int op_xor(int a, int b) { int result = 0; if (a < 0) { a -= -2147483648; result -= -2147483648; } if (b < 0) { b -= -2147483648; result -= -2147483648; } int n = 1; ivec2 ab = ivec2(a, b); for (int i = 0; i < 31; i++) { ivec2 ab_div = ab / 2; ivec2 ab_rem = ab - ab_div*2; result += n * int(ab_rem.x != ab_rem.y); ab = ab_div; n += n; } return result; }\n");
         PrintComponentWrapper2(code, "op_xor", "ivec2", "ivec3", "ivec4");
     }
     else if (name == "op_shr")
