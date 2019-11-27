@@ -2802,7 +2802,7 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
 #endif
             psContext->AddIndentation();
             glsl << TranslateOperand(&psInst->asOperands[0], TO_FLAG_INTEGER | TO_FLAG_DESTINATION);
-            bcatcstr(glsl, " = popCount(");
+            bcatcstr(glsl, " = popcount(");
             glsl << TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER);
             bcatcstr(glsl, ");\n");
             break;
