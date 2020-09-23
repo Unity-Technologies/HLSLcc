@@ -7,6 +7,7 @@
 #include "internal_includes/debug.h"
 #include "internal_includes/Translator.h"
 #include "internal_includes/ControlFlowGraph.h"
+#include "internal_includes/languages.h"
 #include "include/hlslcc.h"
 #include <sstream>
 
@@ -49,8 +50,8 @@ void HLSLCrossCompilerContext::DoDataTypeAnalysis(ShaderPhase *psPhase)
 
         CalculateStandaloneDefinitions(duChains, psPhase->ui32TotalTemps);
 
-        // Only do sampler precision downgrade on pixel shaders.
-        if (psShader->eShaderType == PIXEL_SHADER)
+        // Only do sampler precision downgrade with pixel shaders on mobile targets / Switch
+        if (psShader->eShaderType == PIXEL_SHADER && (IsMobileTarget(this) || IsSwitch()))
             UpdateSamplerPrecisions(psShader->sInfo, duChains, psPhase->ui32TotalTemps);
 
         UDSplitTemps(&psPhase->ui32TotalTemps, duChains, udChains, psPhase->pui32SplitInfo);
@@ -62,6 +63,55 @@ void HLSLCrossCompilerContext::DoDataTypeAnalysis(ShaderPhase *psPhase)
 
     if (psPhase->psTempDeclaration && (psPhase->ui32OrigTemps != psPhase->ui32TotalTemps))
         psPhase->psTempDeclaration->value.ui32NumTemps = psPhase->ui32TotalTemps;
+}
+
+void HLSLCrossCompilerContext::ReserveFramebufferFetchInputs()
+{
+    if (psShader->eShaderType != PIXEL_SHADER)
+        return;
+
+    if (!psShader->extensions->EXT_shader_framebuffer_fetch)
+        return;
+
+    if ((flags & HLSLCC_FLAG_SHADER_FRAMEBUFFER_FETCH) == 0)
+        return;
+
+    if (!(psShader->eTargetLanguage >= LANG_ES_300 && psShader->eTargetLanguage <= LANG_ES_LAST))
+        return;
+
+    if (!psDependencies)
+        return;
+
+    if (!HaveUniformBindingsAndLocations(psShader->eTargetLanguage, psShader->extensions, flags) &&
+        ((flags & HLSLCC_FLAG_FORCE_EXPLICIT_LOCATIONS) == 0 || (flags & HLSLCC_FLAG_COMBINE_TEXTURE_SAMPLERS) != 0))
+        return;
+
+    // The Adreno GLSL compiler fails to compile shaders that use the same location for textures and inout attachments
+    // So here we figure out the maximum index of any inout render target and then make sure that we never use those for textures.
+    int maxInOutRenderTargetIndex = -1;
+    for (const Declaration& decl : psShader->asPhases[0].psDecl)
+    {
+        if (decl.eOpcode != OPCODE_DCL_INPUT_PS)
+            continue;
+
+        const Operand& operand = decl.asOperands[0];
+        if (!operand.iPSInOut)
+            continue;
+
+        const ShaderInfo::InOutSignature* signature = NULL;
+        if (!psShader->sInfo.GetInputSignatureFromRegister(operand.ui32RegisterNumber, operand.ui32CompMask, &signature, true))
+            continue;
+
+        const int index = signature->ui32SemanticIndex;
+        if (index > maxInOutRenderTargetIndex)
+            maxInOutRenderTargetIndex = index;
+    }
+
+    if (maxInOutRenderTargetIndex >= 0)
+    {
+        if (maxInOutRenderTargetIndex >= psDependencies->m_NextAvailableGLSLResourceBinding[GLSLCrossDependencyData::BufferType_Texture])
+            psDependencies->m_NextAvailableGLSLResourceBinding[GLSLCrossDependencyData::BufferType_Texture] = maxInOutRenderTargetIndex + 1;
+    }
 }
 
 void HLSLCrossCompilerContext::ClearDependencyData()

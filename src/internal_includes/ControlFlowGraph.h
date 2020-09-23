@@ -30,7 +30,7 @@ namespace ControlFlow
 
         typedef std::vector<shared_ptr<BasicBlock> > BasicBlockStorage;
 
-        const BasicBlock &Build(const Instruction *firstInstruction);
+        const BasicBlock &Build(const Instruction* firstInstruction, const Instruction* endInstruction);
 
         // Only works for instructions that start the basic block
         const BasicBlock *GetBasicBlockForInstruction(const Instruction *instruction) const;
@@ -62,31 +62,33 @@ namespace ControlFlow
 
         struct Definition
         {
-            Definition(const Instruction *i = NULL, const Operand *o = NULL)
+            Definition(const Instruction* i = nullptr, const Operand* o = nullptr)
                 : m_Instruction(i)
                 , m_Operand(o)
             {}
 
-            Definition(const Definition &a)
-                : m_Instruction(a.m_Instruction)
-                , m_Operand(a.m_Operand)
-            {}
+            Definition(const Definition& a) = default;
+            Definition(Definition&& a) = default;
+            ~Definition() = default;
 
-            bool operator==(const Definition &a) const
+            Definition& operator=(const Definition& a) = default;
+            Definition& operator=(Definition&& a) = default;
+
+            bool operator==(const Definition& a) const
             {
                 if (a.m_Instruction != m_Instruction)
                     return false;
                 return a.m_Operand == m_Operand;
             }
 
-            bool operator!=(const Definition &a) const
+            bool operator!=(const Definition& a) const
             {
                 if (a.m_Instruction == m_Instruction)
                     return false;
                 return a.m_Operand != m_Operand;
             }
 
-            bool operator<(const Definition &a) const
+            bool operator<(const Definition& a) const
             {
                 if (m_Instruction != a.m_Instruction)
                     return m_Instruction < a.m_Instruction;
@@ -118,7 +120,7 @@ namespace ControlFlow
     private:
 
         // Generate a basic block. Private constructor, can only be constructed from ControlFlowGraph::Build()
-        BasicBlock(const Instruction *psFirst, ControlFlowGraph &graph, const Instruction *psPrecedingBlockHead);
+        BasicBlock(const Instruction *psFirst, ControlFlowGraph &graph, const Instruction *psPrecedingBlockHead, const Instruction* psEnd);
 
         // Walk through the instructions and build UEVar and VarKill sets, create succeeding nodes if they don't exist already.
         void Build();
@@ -133,6 +135,7 @@ namespace ControlFlow
 
         const Instruction *m_First;     // The first instruction in the basic block
         const Instruction *m_Last;     // The last instruction in the basic block. Either OPCODE_RET or a branch/jump/loop instruction
+        const Instruction *m_End; // past-the-end pointer
 
         RegisterSet m_UEVar;        // Upwards-exposed variables (temps that need definition from upstream and are used in this basic block)
         RegisterSet m_VarKill;      // Set of variables that are defined in this block.

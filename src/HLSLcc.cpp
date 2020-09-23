@@ -1,6 +1,7 @@
 #include "hlslcc.h"
 
 #include <memory>
+#include <sstream>
 #include "internal_includes/HLSLCrossCompilerContext.h"
 #include "internal_includes/toGLSL.h"
 #include "internal_includes/toMetal.h"
@@ -27,6 +28,27 @@
 #define GL_COMPUTE_SHADER 0x91B9
 #endif
 
+static bool CheckConstantBuffersNoDuplicateNames(const std::vector<ConstantBuffer>& buffers, HLSLccReflection& reflectionCallbacks)
+{
+    uint32_t count = buffers.size();
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        const ConstantBuffer& lhs = buffers[i];
+        for (uint32_t j = i + 1; j < count; ++j)
+        {
+            const ConstantBuffer& rhs = buffers[j];
+            if (lhs.name == rhs.name)
+            {
+                std::ostringstream oss;
+                oss << "Duplicate constant buffer declaration: " << lhs.name;
+                reflectionCallbacks.OnDiagnostics(oss.str(), 0, true);
+                return false;
+            }
+        }
+    }
+
+    return true;
+}
 
 HLSLCC_API int HLSLCC_APIENTRY TranslateHLSLFromMem(const char* shader,
     unsigned int flags,
@@ -49,6 +71,10 @@ HLSLCC_API int HLSLCC_APIENTRY TranslateHLSLFromMem(const char* shader,
 
     if (psShader.get())
     {
+        Shader* shader = psShader.get();
+        if (!CheckConstantBuffersNoDuplicateNames(shader->sInfo.psConstantBuffers, reflectionCallbacks))
+            return 0;
+
         HLSLCrossCompilerContext sContext(reflectionCallbacks);
 
         // Add shader precisions from the list
@@ -59,7 +85,11 @@ HLSLCC_API int HLSLCC_APIENTRY TranslateHLSLFromMem(const char* shader,
             flags &= ~HLSLCC_FLAG_COMBINE_TEXTURE_SAMPLERS;
         }
 
-        sContext.psShader = psShader.get();
+#ifdef _DEBUG
+        flags |= HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS;
+#endif
+
+        sContext.psShader = shader;
         sContext.flags = flags;
 
         // If dependencies == NULL, we'll create a dummy object for it so that there's always something there.
@@ -68,6 +98,7 @@ HLSLCC_API int HLSLCC_APIENTRY TranslateHLSLFromMem(const char* shader,
         {
             depPtr.reset(new GLSLCrossDependencyData());
             sContext.psDependencies = depPtr.get();
+            sContext.psDependencies->SetupGLSLResourceBindingSlotsIndices();
         }
         else
             sContext.psDependencies = dependencies;

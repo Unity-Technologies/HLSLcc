@@ -43,6 +43,14 @@ static int HaveOverloadedTextureFuncs(const GLLang eLang)
     return 1;
 }
 
+static bool IsMobileTarget(const HLSLCrossCompilerContext *psContext)
+{
+    if ((psContext->flags & HLSLCC_FLAG_MOBILE_TARGET) != 0)
+        return true;
+
+    return false;
+}
+
 //Only enable for ES. Vulkan and Switch.
 //Not present in 120, ignored in other desktop languages. Specifically enabled on Vulkan.
 static int HavePrecisionQualifiers(const HLSLCrossCompilerContext *psContext)
@@ -302,6 +310,15 @@ static int HaveCompute(const GLLang eLang)
 static int HaveImageLoadStore(const GLLang eLang)
 {
     if (eLang >= LANG_420 || eLang == LANG_ES_310)
+    {
+        return 1;
+    }
+    return 0;
+}
+
+static int HavePreciseQualifier(const GLLang eLang)
+{
+    if (eLang >= LANG_400) // TODO: Add for ES when we're adding 3.2 lang
     {
         return 1;
     }

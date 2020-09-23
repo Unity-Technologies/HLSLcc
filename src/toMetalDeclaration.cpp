@@ -2,6 +2,8 @@
 #include "internal_includes/debug.h"
 #include "internal_includes/HLSLccToolkit.h"
 #include "internal_includes/Declaration.h"
+#include "internal_includes/HLSLCrossCompilerContext.h"
+#include "internal_includes/languages.h"
 #include <algorithm>
 #include <sstream>
 #include <cmath>
@@ -19,49 +21,49 @@ using namespace HLSLcc;
 
 bool ToMetal::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::InOutSignature *sig, std::string &result, uint32_t *pui32IgnoreSwizzle, bool isIndexed, bool isInput, bool *outSkipPrefix, int *iIgnoreRedirect)
 {
-    if (psContext->psShader->eShaderType == HULL_SHADER && sig && sig->semanticName == "SV_TessFactor")
-    {
-        if (pui32IgnoreSwizzle)
-            *pui32IgnoreSwizzle = 1;
-        ASSERT(sig->ui32SemanticIndex <= 3);
-        std::ostringstream oss;
-        oss << "tessFactor.edgeTessellationFactor[" << sig->ui32SemanticIndex << "]";
-        result = oss.str();
-        if (outSkipPrefix != NULL) *outSkipPrefix = true;
-        if (iIgnoreRedirect != NULL) *iIgnoreRedirect = 1;
-        return true;
-    }
-
-    if (psContext->psShader->eShaderType == HULL_SHADER && sig && sig->semanticName == "SV_InsideTessFactor")
-    {
-        if (pui32IgnoreSwizzle)
-            *pui32IgnoreSwizzle = 1;
-        ASSERT(sig->ui32SemanticIndex <= 1);
-        std::ostringstream oss;
-        oss << "tessFactor.insideTessellationFactor";
-        if (psContext->psShader->sInfo.eTessDomain != TESSELLATOR_DOMAIN_TRI)
-            oss << "[" << sig->ui32SemanticIndex << "]";
-        result = oss.str();
-        if (outSkipPrefix != NULL) *outSkipPrefix = true;
-        if (iIgnoreRedirect != NULL) *iIgnoreRedirect = 1;
-        return true;
-    }
-
-    if (sig && sig->semanticName == "SV_InstanceID")
-    {
-        if (pui32IgnoreSwizzle)
-            *pui32IgnoreSwizzle = 1;
-    }
-
-    if (sig && ((sig->eSystemValueType == NAME_POSITION || sig->semanticName == "POS") && sig->ui32SemanticIndex == 0) &&
-        ((psContext->psShader->eShaderType == VERTEX_SHADER && (psContext->flags & HLSLCC_FLAG_METAL_TESSELLATION) == 0)))
-    {
-        result = "mtl_Position";
-        return true;
-    }
-
     if (sig)
     {
+        if (psContext->psShader->eShaderType == HULL_SHADER && sig->semanticName == "SV_TessFactor")
+        {
+            if (pui32IgnoreSwizzle)
+                *pui32IgnoreSwizzle = 1;
+            ASSERT(sig->ui32SemanticIndex <= 3);
+            std::ostringstream oss;
+            oss << "tessFactor.edgeTessellationFactor[" << sig->ui32SemanticIndex << "]";
+            result = oss.str();
+            if (outSkipPrefix != NULL) *outSkipPrefix = true;
+            if (iIgnoreRedirect != NULL) *iIgnoreRedirect = 1;
+            return true;
+        }
+
+        if (psContext->psShader->eShaderType == HULL_SHADER && sig->semanticName == "SV_InsideTessFactor")
+        {
+            if (pui32IgnoreSwizzle)
+                *pui32IgnoreSwizzle = 1;
+            ASSERT(sig->ui32SemanticIndex <= 1);
+            std::ostringstream oss;
+            oss << "tessFactor.insideTessellationFactor";
+            if (psContext->psShader->sInfo.eTessDomain != TESSELLATOR_DOMAIN_TRI)
+                oss << "[" << sig->ui32SemanticIndex << "]";
+            result = oss.str();
+            if (outSkipPrefix != NULL) *outSkipPrefix = true;
+            if (iIgnoreRedirect != NULL) *iIgnoreRedirect = 1;
+            return true;
+        }
+
+        if (sig->semanticName == "SV_InstanceID")
+        {
+            if (pui32IgnoreSwizzle)
+                *pui32IgnoreSwizzle = 1;
+        }
+
+        if (((sig->eSystemValueType == NAME_POSITION || sig->semanticName == "POS") && sig->ui32SemanticIndex == 0) &&
+            ((psContext->psShader->eShaderType == VERTEX_SHADER && (psContext->flags & HLSLCC_FLAG_METAL_TESSELLATION) == 0)))
+        {
+            result = "mtl_Position";
+            return true;
+        }
+
         switch (sig->eSystemValueType)
         {
             case NAME_POSITION:
@@ -120,15 +122,15 @@ bool ToMetal::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::I
             default:
                 break;
         }
-    }
 
-    if (psContext->psShader->asPhases[psContext->currentPhase].ePhase == HS_CTRL_POINT_PHASE ||
-        psContext->psShader->asPhases[psContext->currentPhase].ePhase == HS_FORK_PHASE)
-    {
-        std::ostringstream oss;
-        oss << sig->semanticName << sig->ui32SemanticIndex;
-        result = oss.str();
-        return true;
+        if (psContext->psShader->asPhases[psContext->currentPhase].ePhase == HS_CTRL_POINT_PHASE ||
+            psContext->psShader->asPhases[psContext->currentPhase].ePhase == HS_FORK_PHASE)
+        {
+            std::ostringstream oss;
+            oss << sig->semanticName << sig->ui32SemanticIndex;
+            result = oss.str();
+            return true;
+        }
     }
 
     switch (psOperand->eType)
@@ -176,7 +178,7 @@ bool ToMetal::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::I
         case OPERAND_TYPE_INPUT:
         {
             std::ostringstream oss;
-            ASSERT(sig != NULL);
+            ASSERT(sig != nullptr);
             oss << sig->semanticName << sig->ui32SemanticIndex;
             result = oss.str();
             if (HLSLcc::WriteMaskToComponentCount(sig->ui32Mask) == 1 && pui32IgnoreSwizzle != NULL)
@@ -186,6 +188,7 @@ bool ToMetal::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::I
         case OPERAND_TYPE_INPUT_PATCH_CONSTANT:
         {
             std::ostringstream oss;
+            ASSERT(sig != nullptr);
             oss << sig->semanticName << sig->ui32SemanticIndex;
             result = oss.str();
             if (outSkipPrefix != NULL) *outSkipPrefix = true;
@@ -194,6 +197,7 @@ bool ToMetal::TranslateSystemValue(const Operand *psOperand, const ShaderInfo::I
         case OPERAND_TYPE_INPUT_CONTROL_POINT:
         {
             std::ostringstream oss;
+            ASSERT(sig != nullptr);
             oss << sig->semanticName << sig->ui32SemanticIndex;
             result = oss.str();
             if (outSkipPrefix != NULL) *outSkipPrefix = true;
@@ -242,6 +246,7 @@ void ToMetal::DeclareBuiltinInput(const Declaration *psDecl)
             break;
         case NAME_INSTANCE_ID:
             m_StructDefinitions[""].m_Members.push_back(std::make_pair("mtl_InstanceID", "uint mtl_InstanceID [[ instance_id ]]"));
+            m_StructDefinitions[""].m_Members.push_back(std::make_pair("mtl_BaseInstance", "uint mtl_BaseInstance [[ base_instance ]]")); // Requires Metal runtime 1.1+
             break;
         case NAME_IS_FRONT_FACE:
             m_StructDefinitions[""].m_Members.push_back(std::make_pair("mtl_FrontFace", "bool mtl_FrontFace [[ front_facing ]]"));
@@ -251,6 +256,7 @@ void ToMetal::DeclareBuiltinInput(const Declaration *psDecl)
             break;
         case NAME_VERTEX_ID:
             m_StructDefinitions[""].m_Members.push_back(std::make_pair("mtl_VertexID", "uint mtl_VertexID [[ vertex_id ]]"));
+            m_StructDefinitions[""].m_Members.push_back(std::make_pair("mtl_BaseVertex", "uint mtl_BaseVertex [[ base_vertex ]]")); // Requires Metal runtime 1.1+
             break;
         case NAME_PRIMITIVE_ID:
             // Not on Metal
@@ -345,7 +351,6 @@ void ToMetal::DeclareBuiltinOutput(const Declaration *psDecl)
             m_StructDefinitions[out].m_Members.push_back(std::make_pair("mtl_Position", "float4 mtl_Position [[ position ]]"));
             break;
         case NAME_RENDER_TARGET_ARRAY_INDEX:
-            // Only supported on a Mac
             m_StructDefinitions[out].m_Members.push_back(std::make_pair("mtl_Layer", "uint mtl_Layer [[ render_target_array_index ]]"));
             break;
         case NAME_CLIP_DISTANCE:
@@ -404,6 +409,8 @@ void ToMetal::DeclareBuiltinOutput(const Declaration *psDecl)
             ASSERT(0); // Wut
             break;
     }
+
+    psContext->m_Reflection.OnBuiltinOutput(psDecl->asOperands[0].eSpecialName);
 }
 
 static std::string BuildOperandTypeString(OPERAND_MIN_PRECISION ePrec, INOUT_COMPONENT_TYPE eType, int numComponents)
@@ -467,6 +474,9 @@ void ToMetal::DeclareHullShaderPassthrough()
             name = oss.str();
         }
 
+        if ((psSig->eSystemValueType == NAME_POSITION || psSig->semanticName == "POS") && psSig->ui32SemanticIndex == 0)
+            name = "mtl_Position";
+
         uint32_t ui32NumComponents = HLSLcc::GetNumberBitsSet(psSig->ui32Mask);
         std::string typeName = BuildOperandTypeString(OPERAND_MIN_PRECISION_DEFAULT, psSig->eComponentType, ui32NumComponents);
 
@@ -488,7 +498,8 @@ void ToMetal::DeclareHullShaderPassthrough()
 
         oss << typeName << " " << name;
         // VERTEX_SHADER hardcoded on purpose
-        uint32_t loc = psContext->psDependencies->GetVaryingLocation(name, VERTEX_SHADER, true);
+        bool keepLocation = ((psContext->flags & HLSLCC_FLAG_KEEP_VARYING_LOCATIONS) != 0);
+        uint32_t loc = psContext->psDependencies->GetVaryingLocation(name, VERTEX_SHADER, true, keepLocation, psContext->psShader->maxSemanticIndex);
         oss << " [[ " << "attribute(" << loc << ")" << " ]] ";
 
         psContext->m_Reflection.OnInputBinding(name, loc);
@@ -717,9 +728,6 @@ static std::string TranslateResourceDeclaration(HLSLCrossCompilerContext* psCont
         if ((psDecl->sUAV.ui32AccessFlags & ACCESS_FLAG_WRITE) != 0)
         {
             access = "write";
-            if (psContext->psShader->eShaderType != COMPUTE_SHADER)
-                psContext->m_Reflection.OnDiagnostics("This shader might not work on all Metal devices because of texture writes on non-compute shaders.", 0, false);
-
             if ((psDecl->sUAV.ui32AccessFlags & ACCESS_FLAG_READ) != 0)
             {
                 access = "read_write";
@@ -1099,11 +1107,6 @@ void ToMetal::DeclareBufferVariable(const Declaration *psDecl, bool isRaw, bool 
             BufConst =  "const ";
             oss << BufConst;
         }
-        else
-        {
-            if (psContext->psShader->eShaderType != COMPUTE_SHADER)
-                psContext->m_Reflection.OnDiagnostics("This shader might not work on all Metal devices because of buffer writes on non-compute shaders.", 0, false);
-        }
 
         if (isRaw)
             oss << "device uint *" << BufName;
@@ -1114,23 +1117,12 @@ void ToMetal::DeclareBufferVariable(const Declaration *psDecl, bool isRaw, bool 
         oss << " [[ buffer(" << loc << ") ]]";
 
         m_StructDefinitions[""].m_Members.push_back(std::make_pair(BufName, oss.str()));
-        psContext->m_Reflection.OnBufferBinding(BufName, loc, isUAV);
+
+        // We don't do REAL reflection here, we need to collect all data and figure out if we're dealing with counters.
+        // And if so - we need to patch counter binding info, add counters to empty slots, etc
+        const BufferReflection br = { loc, isUAV, psDecl->sUAV.bCounter != 0 };
+        m_BufferReflections.insert(std::make_pair(BufName, br));
     }
-
-    // In addition to the actual declaration, we need pointer modification and possible counter declaration
-    // in early main:
-
-    // Possible counter is always in the beginning of the buffer
-    if (isUAV && psDecl->sUAV.bCounter)
-    {
-        bformata(GetEarlyMain(psContext), "device atomic_uint *%s_counter = reinterpret_cast<device atomic_uint *> (%s);\n", BufName.c_str(), BufName.c_str());
-    }
-
-    // Some GPUs don't allow memory access below buffer binding offset in the shader so always bind compute buffer
-    // at offset 0 instead of GetDataOffset().
-    // We can't tell at shader compile time if the buffer actually has counter or not. Therefore we'll always reserve
-    // space for the counter and bump the data pointer to beginning of the actual data here.
-    bformata(GetEarlyMain(psContext), "%s = reinterpret_cast<%sdevice %s *> (reinterpret_cast<device %satomic_uint *> (%s) + 1);\n", BufName.c_str(), BufConst.c_str(), (isRaw ? "uint" : BufType.c_str()), BufConst.c_str(), BufName.c_str());
 }
 
 static int ParseInlineSamplerWrapMode(const std::string& samplerName, const std::string& wrapName)
@@ -1185,6 +1177,11 @@ static bool EmitInlineSampler(HLSLCrossCompilerContext* psContext, const std::st
         return false;
     }
 
+    // Starting with macOS 11/iOS 14, the metal compiler will warn about unused inline samplers, that might
+    // happen on mobile due to _mtl_xl_shadow_sampler workaround that's required for pre-GPUFamily3.
+    if (hasCompare && IsMobileTarget(psContext))
+        return true;
+
     bstring str = GetEarlyMain(psContext);
     bformata(str, "constexpr sampler %s(", name.c_str());
 
@@ -1194,7 +1191,7 @@ static bool EmitInlineSampler(HLSLCrossCompilerContext* psContext, const std::st
     if (hasTrilinear)
         bformata(str, "filter::linear,mip_filter::linear,");
     else if (hasLinear)
-        bformata(str, "filter::linear,");
+        bformata(str, "filter::linear,mip_filter::nearest,");
     else
         bformata(str, "filter::nearest,");
 
@@ -1276,7 +1273,7 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
             }
 
             //Already declared as part of an array.
-            if (psShader->aIndexedInput[psOperand->GetRegisterSpace(psContext)][psDecl->asOperands[0].ui32RegisterNumber] == -1)
+            if (psDecl->eOpcode == OPCODE_DCL_INPUT && psShader->aIndexedInput[psOperand->GetRegisterSpace(psContext)][psDecl->asOperands[0].ui32RegisterNumber] == -1)
             {
                 break;
             }
@@ -1401,7 +1398,8 @@ void ToMetal::TranslateDeclaration(const Declaration* psDecl)
             {
                 std::ostringstream oss;
                 // VERTEX_SHADER hardcoded on purpose
-                uint32_t loc = psContext->psDependencies->GetVaryingLocation(name, VERTEX_SHADER, true);
+                bool keepLocation = ((psContext->flags & HLSLCC_FLAG_KEEP_VARYING_LOCATIONS) != 0);
+                uint32_t loc = psContext->psDependencies->GetVaryingLocation(name, VERTEX_SHADER, true, keepLocation, psShader->maxSemanticIndex);
                 oss << "attribute(" << loc << ")";
                 semantic = oss.str();
                 psContext->m_Reflection.OnInputBinding(name, loc);
@@ -2391,6 +2389,7 @@ void ToMetal::DeclareOutput(const Declaration *psDecl)
                     oss << type << " " << name << " [[ color(xlt_remap_o[" << psSignature->ui32SemanticIndex << "]) ]]";
                     m_NeedFBOutputRemapDecl = true;
                     m_StructDefinitions[GetOutputStructName()].m_Members.push_back(std::make_pair(name, oss.str()));
+                    psContext->m_Reflection.OnFragmentOutputDeclaration(iNumComponents, psSignature->ui32SemanticIndex);
                 }
             }
             break;
@@ -2412,6 +2411,9 @@ void ToMetal::DeclareOutput(const Declaration *psDecl)
                 oss << " [[ user(" << name << ") ]]";
             m_StructDefinitions[out].m_Members.push_back(std::make_pair(name, oss.str()));
 
+            if (psContext->psShader->eShaderType == VERTEX_SHADER)
+                psContext->m_Reflection.OnVertexProgramOutput(name, psSignature->semanticName, psSignature->ui32SemanticIndex);
+
             // For preserving data layout, declare output struct as domain shader input, too
             if (psContext->psShader->eShaderType == HULL_SHADER)
             {
@@ -2421,7 +2423,8 @@ void ToMetal::DeclareOutput(const Declaration *psDecl)
                 oss << type << " " << name;
 
                 // VERTEX_SHADER hardcoded on purpose
-                uint32_t loc = psContext->psDependencies->GetVaryingLocation(name, VERTEX_SHADER, true);
+                bool keepLocation = ((psContext->flags & HLSLCC_FLAG_KEEP_VARYING_LOCATIONS) != 0);
+                uint32_t loc = psContext->psDependencies->GetVaryingLocation(name, VERTEX_SHADER, true, keepLocation, psContext->psShader->maxSemanticIndex);
                 oss << " [[ " << "attribute(" << loc << ")" << " ]] ";
 
                 psContext->m_Reflection.OnInputBinding(name, loc);
@@ -2439,7 +2442,8 @@ void ToMetal::DeclareOutput(const Declaration *psDecl)
 
 void ToMetal::EnsureShadowSamplerDeclared()
 {
-    if (m_ShadowSamplerDeclared)
+    // on macos we will set comparison func from the app side
+    if (m_ShadowSamplerDeclared || !IsMobileTarget(psContext))
         return;
 
     if ((psContext->flags & HLSLCC_FLAG_METAL_SHADOW_SAMPLER_LINEAR) != 0 || (psContext->psShader->eShaderType == COMPUTE_SHADER))

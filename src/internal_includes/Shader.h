@@ -15,9 +15,9 @@
 
 struct ConstantArrayChunk
 {
-    ConstantArrayChunk() : m_Size(0), m_AccessMask(0) {}
+    ConstantArrayChunk() : m_Size(0), m_AccessMask(0), m_Rebase(0), m_ComponentCount(0) {}
     ConstantArrayChunk(uint32_t sz, uint32_t mask, Operand *firstUse)
-        : m_Size(sz), m_AccessMask(mask)
+        : m_Size(sz), m_AccessMask(mask), m_Rebase(0), m_ComponentCount(0)
     {
         m_UseSites.push_back(firstUse);
     }
@@ -63,7 +63,7 @@ public:
         m_NextTexCoordTemp(0)
     {}
 
-    void ResolveUAVProperties();
+    void ResolveUAVProperties(const ShaderInfo& sInfo);
 
     void UnvectorizeImmMoves(); // Transform MOV tX.xyz, (0, 1, 2) into MOV tX.x, 0; MOV tX.y, 1; MOV tX.z, 2 to make datatype analysis easier
 
@@ -103,9 +103,6 @@ public:
     uint32_t m_NextFreeTempRegister; // A counter for creating new temporaries for for-loops.
     uint32_t m_NextTexCoordTemp; // A counter for creating tex coord temps for driver issue workarounds
 
-    // Instructions that are static branches (branches based on constant buffer values only)
-    std::vector<Instruction *> m_StaticBranchInstructions;
-
 private:
     bool m_CFGInitialized;
     HLSLcc::ControlFlow::ControlFlowGraph m_CFG;
@@ -143,9 +140,8 @@ public:
         aiOpcodeUsed(NUM_OPCODES, 0),
         ui32CurrentVertexOutputStream(0),
         textureSamplers(),
-        aui32StructuredBufferBindingPoints(MAX_RESOURCE_BINDINGS, 0),
-        ui32CurrentStructuredBufferIndex(),
-        m_DummySamplerDeclared(false)
+        m_DummySamplerDeclared(false),
+        maxSemanticIndex(0)
     {
     }
 
@@ -157,20 +153,15 @@ public:
     //Convert from per-phase temps to global temps.
     void ConsolidateHullTempVars();
 
-    // Go through all declarations and remove UAV occupied binding points from the aui32StructuredBufferBindingPoints list
-    void ResolveStructuredBufferBindingSlots(ShaderPhase *psPhase);
-
-    // HLSL has separate register spaces for UAV and structured buffers. GLSL has shared register space for all buffers.
-    // The aim here is to preserve the UAV buffer bindings as they are and use remaining binding points for structured buffers.
-    // In this step make aui32StructuredBufferBindingPoints contain increasingly ordered uints starting from zero.
-    void PrepareStructuredBufferBindingSlots();
-
     // Detect temp registers per data type that are actually used.
     void PruneTempRegisters();
 
     // Check if inputs and outputs are accessed across semantic boundaries
     // as in, 2x texcoord vec2's are packed together as vec4 but still accessed together.
     void AnalyzeIOOverlap();
+
+    // Compute maxSemanticIndex based on the results of AnalyzeIOOverlap
+    void SetMaxSemanticIndex();
 
     // Change all references to vertex position to always be highp, having them be mediump causes problems on Metal and Vivante GPUs.
     void ForcePositionToHighp();
@@ -245,9 +236,6 @@ public:
 
     TextureSamplerPairs textureSamplers;
 
-    std::vector<uint32_t> aui32StructuredBufferBindingPoints;
-    uint32_t ui32CurrentStructuredBufferIndex;
-
     std::vector<char> psIntTempSizes; // Array for whether this temp register needs declaration as int temp
     std::vector<char> psInt16TempSizes; // min16ints
     std::vector<char> psInt12TempSizes; // min12ints
@@ -260,6 +248,7 @@ public:
     std::vector<char> psBoolTempSizes; // ... and for bools
 
     bool m_DummySamplerDeclared; // If true, the shader doesn't declare any samplers but uses texelFetch and we have added a dummy sampler for Vulkan for that.
+    uint32_t maxSemanticIndex;        // Highest semantic index found by SignatureAnalysis
 
 private:
     void DoIOOverlapOperand(ShaderPhase *psPhase, Operand *psOperand);

@@ -15,14 +15,16 @@ typedef struct ICBVec4_TAG
 
 #define ACCESS_FLAG_READ       0x1
 #define ACCESS_FLAG_WRITE      0x2
+#define ACCESS_FLAG_ATOMIC     0x4
 
 struct Declaration
 {
-    Declaration()
-        :
+    Declaration() :
         eOpcode(OPCODE_INVALID),
         ui32NumOperands(0),
-        ui32BufferStride(0)
+        ui32BufferStride(0),
+        ui32TableLength(0),
+        ui32IsShadowTex(0)
     {}
 
     OPCODE_TYPE eOpcode;
@@ -85,6 +87,12 @@ struct Declaration
     {
         uint32_t ui32Stride;
         uint32_t ui32Count;
+
+        TGSM_TAG() :
+            ui32Stride(0),
+            ui32Count(0)
+        {
+        }
     } sTGSM;
 
     struct IndexableTemp_TAG
@@ -92,6 +100,13 @@ struct Declaration
         uint32_t ui32RegIndex;
         uint32_t ui32RegCount;
         uint32_t ui32RegComponentSize;
+
+        IndexableTemp_TAG() :
+            ui32RegIndex(0),
+            ui32RegCount(0),
+            ui32RegComponentSize(0)
+        {
+        }
     } sIdxTemp;
 
     uint32_t ui32TableLength;

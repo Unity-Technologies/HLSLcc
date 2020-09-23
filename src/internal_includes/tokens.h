@@ -714,6 +714,11 @@ static uint32_t DecodeInstructionSaturate(uint32_t ui32Token)
     return (ui32Token & 0x00002000) ? 1 : 0;
 }
 
+static uint32_t DecodeInstructionPreciseMask(uint32_t ui32Token) // "precise" keyword
+{
+    return (uint32_t)((ui32Token & 0x00780000) >> 19);
+}
+
 typedef enum OPERAND_MIN_PRECISION
 {
     OPERAND_MIN_PRECISION_DEFAULT    = 0, // Default precision

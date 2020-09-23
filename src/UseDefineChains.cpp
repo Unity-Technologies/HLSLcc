@@ -582,8 +582,6 @@ static int AttemptSplitDefinitions(SplitDefinitions &defs, uint32_t *psNumTemps,
                         // Add this define and all its siblings to the table and try again
                         AddDefineToList(defs, *dl);
                         return AttemptSplitDefinitions(defs, psNumTemps, psDUChains, psUDChains, pui32SplitTable);
-                        canSplit = 0;
-                        break;
                     }
 
                     dl++;
@@ -642,61 +640,6 @@ void UDSplitTemps(uint32_t *psNumTemps, DefineUseChains &psDUChains, UseDefineCh
     }
 }
 
-// Returns nonzero if all the operands have partial precision and at least one of them has been downgraded as part of shader downgrading process.
-// Sampler ops, bitwise ops and comparisons are ignored.
-static int CanDowngradeDefinitionPrecision(DefineUseChain::iterator du, OPERAND_MIN_PRECISION *pType)
-{
-    Instruction *psInst = du->psInst;
-    int hasFullPrecOperands = 0;
-    uint32_t i;
-
-    if (du->psOp->eMinPrecision != OPERAND_MIN_PRECISION_DEFAULT)
-        return 0;
-
-    switch (psInst->eOpcode)
-    {
-        case OPCODE_ADD:
-        case OPCODE_MUL:
-        case OPCODE_MOV:
-        case OPCODE_MAD:
-        case OPCODE_DIV:
-        case OPCODE_LOG:
-        case OPCODE_EXP:
-        case OPCODE_MAX:
-        case OPCODE_MIN:
-        case OPCODE_DP2:
-        case OPCODE_DP2ADD:
-        case OPCODE_DP3:
-        case OPCODE_DP4:
-        case OPCODE_RSQ:
-        case OPCODE_SQRT:
-            break;
-        default:
-            return 0;
-    }
-
-    for (i = psInst->ui32FirstSrc; i < psInst->ui32NumOperands; i++)
-    {
-        Operand *op = &psInst->asOperands[i];
-        if (op->eType == OPERAND_TYPE_IMMEDIATE32)
-            continue; // Immediate values are ignored
-
-        if (op->eMinPrecision == OPERAND_MIN_PRECISION_DEFAULT)
-        {
-            hasFullPrecOperands = 1;
-            break;
-        }
-    }
-
-    if (hasFullPrecOperands)
-        return 0;
-
-    if (pType)
-        *pType = OPERAND_MIN_PRECISION_FLOAT_16; // Don't go lower than mediump
-
-    return 1;
-}
-
 // Returns true if all the usages of this definitions are instructions that deal with floating point data
 static bool HasOnlyFloatUsages(DefineUseChain::iterator du)
 {
@@ -747,8 +690,7 @@ void UpdateSamplerPrecisions(const ShaderInfo &info, DefineUseChains &psDUChains
             while (du != psDUChains[i].end())
             {
                 OPERAND_MIN_PRECISION sType = OPERAND_MIN_PRECISION_DEFAULT;
-                if ((du->psInst->IsPartialPrecisionSamplerInstruction(info, &sType)
-                     || CanDowngradeDefinitionPrecision(du, &sType))
+                if (du->psInst->IsPartialPrecisionSamplerInstruction(info, &sType)
                     && du->psInst->asOperands[0].eType == OPERAND_TYPE_TEMP
                     && du->psInst->asOperands[0].eMinPrecision == OPERAND_MIN_PRECISION_DEFAULT
                     && du->isStandalone

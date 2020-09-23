@@ -15,7 +15,21 @@ class HLSLccReflection;
 class HLSLCrossCompilerContext
 {
 public:
-    HLSLCrossCompilerContext(HLSLccReflection &refl) : m_Reflection(refl) {}
+    HLSLCrossCompilerContext(HLSLccReflection &refl) :
+        glsl(nullptr),
+        extensions(nullptr),
+        beforeMain(nullptr),
+        currentGLSLString(nullptr),
+        currentPhase(0),
+        indent(0),
+        flags(0),
+        psShader(nullptr),
+        psDependencies(nullptr),
+        inputPrefix(nullptr),
+        outputPrefix(nullptr),
+        psTranslator(nullptr),
+        m_Reflection(refl)
+    {}
 
     bstring glsl;
     bstring extensions;
@@ -42,6 +56,7 @@ public:
     const char *outputPrefix; // Prefix for shader outputs
 
     void DoDataTypeAnalysis(ShaderPhase *psPhase);
+    void ReserveFramebufferFetchInputs();
 
     void ClearDependencyData();
 
