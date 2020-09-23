@@ -9,7 +9,7 @@
 using namespace HLSLcc::ControlFlow;
 using HLSLcc::ForEachOperand;
 
-const BasicBlock &ControlFlowGraph::Build(const Instruction *firstInstruction)
+const BasicBlock &ControlFlowGraph::Build(const Instruction* firstInstruction, const Instruction* endInstruction)
 {
     using std::for_each;
 
@@ -17,7 +17,7 @@ const BasicBlock &ControlFlowGraph::Build(const Instruction *firstInstruction)
     m_BlockStorage.clear();
 
     // Self-registering into m_BlockStorage so it goes out of the scope when ControlFlowGraph does
-    BasicBlock *root = new BasicBlock(Utils::GetNextNonLabelInstruction(firstInstruction), *this, NULL);
+    BasicBlock *root = new BasicBlock(Utils::GetNextNonLabelInstruction(firstInstruction), *this, NULL, endInstruction);
 
     // Build the reachable set for each block
     bool hadChanges;
@@ -58,10 +58,11 @@ BasicBlock *ControlFlowGraph::GetBasicBlockForInstruction(const Instruction *ins
 
 // Generate a basic block. Private constructor, can only be constructed from ControlFlowGraph::Build().
 // Auto-registers itself into ControlFlowGraph
-BasicBlock::BasicBlock(const Instruction *psFirst, ControlFlowGraph &graph, const Instruction *psPrecedingBlockHead)
+BasicBlock::BasicBlock(const Instruction *psFirst, ControlFlowGraph &graph, const Instruction *psPrecedingBlockHead, const Instruction* endInstruction)
     : m_Graph(graph)
     , m_First(psFirst)
     , m_Last(NULL)
+    , m_End(endInstruction)
 {
     m_UEVar.clear();
     m_VarKill.clear();
@@ -94,7 +95,7 @@ BasicBlock::BasicBlock(const Instruction *psFirst, ControlFlowGraph &graph, cons
 void BasicBlock::Build()
 {
     const Instruction *inst = m_First;
-    while (1)
+    while (inst != m_End)
     {
         // Process sources first
         ForEachOperand(inst, inst + 1, FEO_FLAG_SRC_OPERAND | FEO_FLAG_SUBOPERAND,
@@ -158,7 +159,8 @@ void BasicBlock::Build()
             default:
                 break;
             case OPCODE_RET:
-                blockDone = true;
+                // Continue processing, in the case of unreachable code we still need to translate it properly (case 1160309)
+                // blockDone = true;
                 break;
             case OPCODE_RETC:
                 // Basic block is done, start a next one.
@@ -240,7 +242,7 @@ void BasicBlock::Build()
     m_Reachable = m_DEDef;
 
     // Tag the end of the basic block
-    m_Last = inst;
+    m_Last = std::max(m_First, std::min(inst, m_End - 1));
 //  printf("Basic Block %d -> %d\n", (int)m_First->id, (int)m_Last->id);
 }
 
@@ -256,7 +258,7 @@ BasicBlock * BasicBlock::AddChildBasicBlock(const Instruction *psFirst)
         return b;
     }
     // Otherwise create one. Self-registering and self-connecting
-    return new BasicBlock(psFirst, m_Graph, m_First);
+    return new BasicBlock(psFirst, m_Graph, m_First, m_End);
 }
 
 bool BasicBlock::RebuildReachable()
@@ -334,6 +336,7 @@ void BasicBlock::RVarUnion(ReachableVariables &a, const ReachableVariables &b)
 #if ENABLE_UNIT_TESTS
 
 #define UNITY_EXTERNAL_TOOL 1
+#include "Projects/PrecompiledHeaders/UnityPrefix.h" // Needed for defines such as ENABLE_CPP_EXCEPTIONS
 #include "Testing.h" // From Runtime/Testing
 
 UNIT_TEST_SUITE(HLSLcc)
@@ -348,7 +351,7 @@ UNIT_TEST_SUITE(HLSLcc)
         };
 
         ControlFlowGraph cfg;
-        const BasicBlock &root = cfg.Build(inst);
+        const BasicBlock &root = cfg.Build(inst, inst + ARRAY_SIZE(inst));
 
         CHECK_EQUAL(&inst[0], root.First());
         CHECK_EQUAL(&inst[1], root.Last());
@@ -403,7 +406,7 @@ UNIT_TEST_SUITE(HLSLcc)
         };
 
         ControlFlowGraph cfg;
-        const BasicBlock &root = cfg.Build(inst);
+        const BasicBlock &root = cfg.Build(inst, inst + ARRAY_SIZE(inst));
 
         CHECK_EQUAL(root.First(), &inst[0]);
         CHECK_EQUAL(root.Last(), &inst[2]);
@@ -539,7 +542,7 @@ UNIT_TEST_SUITE(HLSLcc)
         };
 
         ControlFlowGraph cfg;
-        const BasicBlock &root = cfg.Build(inst);
+        const BasicBlock &root = cfg.Build(inst, inst + ARRAY_SIZE(inst));
 
         CHECK_EQUAL(&inst[0], root.First());
         CHECK_EQUAL(&inst[4], root.Last());
@@ -699,7 +702,7 @@ UNIT_TEST_SUITE(HLSLcc)
         };
 
         ControlFlowGraph cfg;
-        const BasicBlock &root = cfg.Build(inst);
+        const BasicBlock &root = cfg.Build(inst, inst + ARRAY_SIZE(inst));
 
         CHECK_EQUAL(&inst[0], root.First());
         CHECK_EQUAL(&inst[2], root.Last());

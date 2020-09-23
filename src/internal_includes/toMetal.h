@@ -20,8 +20,6 @@ struct TextureSamplerDesc
 
 class ToMetal : public Translator
 {
-protected:
-    GLLang language;
 public:
     explicit ToMetal(HLSLCrossCompilerContext *ctx)
         : Translator(ctx)
@@ -78,9 +76,9 @@ private:
     // ToMetalInstruction.cpp
 
     void AddOpAssignToDestWithMask(const Operand* psDest,
-        SHADER_VARIABLE_TYPE eSrcType, uint32_t ui32SrcElementCount, const char *szAssignmentOp, int *pNeedsParenthesis, uint32_t ui32CompMask);
+        SHADER_VARIABLE_TYPE eSrcType, uint32_t ui32SrcElementCount, uint32_t precise, int& numParenthesis, uint32_t ui32CompMask);
     void AddAssignToDest(const Operand* psDest,
-        SHADER_VARIABLE_TYPE eSrcType, uint32_t ui32SrcElementCount, int* pNeedsParenthesis);
+        SHADER_VARIABLE_TYPE eSrcType, uint32_t ui32SrcElementCount, uint32_t precise, int& numParenthesis);
     void AddAssignPrologue(int numParenthesis);
 
     typedef enum
@@ -96,8 +94,8 @@ private:
 
     bool CanForceToHalfOperand(const Operand *psOperand);
 
-    void AddMOVBinaryOp(const Operand *pDest, Operand *pSrc);
-    void AddMOVCBinaryOp(const Operand *pDest, const Operand *src0, Operand *src1, Operand *src2);
+    void AddMOVBinaryOp(const Operand *pDest, Operand *pSrc, uint32_t precise);
+    void AddMOVCBinaryOp(const Operand *pDest, const Operand *src0, Operand *src1, Operand *src2, uint32_t precise);
     void CallBinaryOp(const char* name, Instruction* psInst,
         int dest, int src0, int src1, SHADER_VARIABLE_TYPE eDataType);
     void CallTernaryOp(const char* op1, const char* op2, Instruction* psInst,
@@ -151,6 +149,14 @@ private:
 
     BindingSlotAllocator m_TextureSlots, m_SamplerSlots;
     BindingSlotAllocator m_BufferSlots;
+
+    struct BufferReflection
+    {
+        uint32_t bind;
+        bool isUAV;
+        bool hasCounter;
+    };
+    std::map<std::string, BufferReflection> m_BufferReflections;
 
     std::vector<SamplerDesc> m_Samplers;
     std::vector<TextureSamplerDesc> m_Textures;

@@ -68,7 +68,10 @@ static void DoHullShaderPassthrough(HLSLCrossCompilerContext *psContext)
         const ShaderInfo::InOutSignature *psSig = &psContext->psShader->sInfo.psInputSignatures[i];
 
         psContext->AddIndentation();
-        bformata(glsl, "%s%s%d = %scp[controlPointID].%s%d;\n", psContext->outputPrefix, psSig->semanticName.c_str(), psSig->ui32SemanticIndex, psContext->inputPrefix, psSig->semanticName.c_str(), psSig->ui32SemanticIndex);
+        if ((psSig->eSystemValueType == NAME_POSITION || psSig->semanticName == "POS") && psSig->ui32SemanticIndex == 0)
+            bformata(glsl, "%s%s = %scp[controlPointID].%s;\n", psContext->outputPrefix, "mtl_Position", psContext->inputPrefix, "mtl_Position");
+        else
+            bformata(glsl, "%s%s%d = %scp[controlPointID].%s%d;\n", psContext->outputPrefix, psSig->semanticName.c_str(), psSig->ui32SemanticIndex, psContext->inputPrefix, psSig->semanticName.c_str(), psSig->ui32SemanticIndex);
     }
 }
 
@@ -85,6 +88,8 @@ bool ToMetal::Translate()
     psShader->ExpandSWAPCs();
     psShader->ForcePositionToHighp();
     psShader->AnalyzeIOOverlap();
+    if ((psContext->flags & HLSLCC_FLAG_KEEP_VARYING_LOCATIONS) != 0)
+        psShader->SetMaxSemanticIndex();
     psShader->FindUnusedGlobals(psContext->flags);
 
     psContext->indent = 0;
@@ -136,7 +141,7 @@ bool ToMetal::Translate()
         ShaderPhase &phase = psShader->asPhases[ui32Phase];
         phase.UnvectorizeImmMoves();
         psContext->DoDataTypeAnalysis(&phase);
-        phase.ResolveUAVProperties();
+        phase.ResolveUAVProperties(psShader->sInfo);
         ReserveUAVBindingSlots(&phase); // TODO: unify slot allocation code between gl/metal/vulkan
         HLSLcc::DoLoopTransform(psContext, phase);
     }
@@ -189,9 +194,10 @@ bool ToMetal::Translate()
                     continue;
                 psContext->currentPhase = ui32Phase;
 
-#ifdef _DEBUG
-                // bformata(glsl, "//%s declarations\n", GetPhaseFuncName(psPhase->ePhase));
-#endif
+                if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+                {
+                    // bformata(glsl, "//%s declarations\n", GetPhaseFuncName(psPhase->ePhase));
+                }
                 for (i = 0; i < psPhase->psDecl.size(); ++i)
                 {
                     TranslateDeclaration(&psPhase->psDecl[i]);
@@ -205,8 +211,12 @@ bool ToMetal::Translate()
     }
     else
     {
+        psContext->indent++;
+
         for (i = 0; i < psShader->asPhases[0].psDecl.size(); ++i)
             TranslateDeclaration(&psShader->asPhases[0].psDecl[i]);
+
+        psContext->indent--;
 
         // Output default implementations for framebuffer index remap if needed
         if (m_NeedFBOutputRemapDecl)
@@ -383,6 +393,13 @@ bool ToMetal::Translate()
                 else if (psShader->eShaderType == HULL_SHADER)
                     mem.second.assign("// mtl_InstanceID passed through groupID");
             }
+            else if (mem.first == "mtl_BaseInstance")
+            {
+                if (psShader->eShaderType == VERTEX_SHADER)
+                    mem.second.assign("uint mtl_BaseInstance");
+                else if (psShader->eShaderType == HULL_SHADER)
+                    mem.second.assign("// mtl_BaseInstance ignored");
+            }
             else if (mem.first == "mtl_VertexID")
             {
                 if (psShader->eShaderType == VERTEX_SHADER)
@@ -391,6 +408,15 @@ bool ToMetal::Translate()
                     mem.second.assign("// mtl_VertexID generated in compute kernel");
                 else if (psShader->eShaderType == DOMAIN_SHADER)
                     mem.second.assign("// mtl_VertexID unused");
+            }
+            else if (mem.first == "mtl_BaseVertex")
+            {
+                if (psShader->eShaderType == VERTEX_SHADER)
+                    mem.second.assign("uint mtl_BaseVertex");
+                else if (psShader->eShaderType == HULL_SHADER)
+                    mem.second.assign("// mtl_BaseVertex generated in compute kernel");
+                else if (psShader->eShaderType == DOMAIN_SHADER)
+                    mem.second.assign("// mtl_BaseVertex unused");
             }
         });
     }
@@ -467,6 +493,23 @@ bool ToMetal::Translate()
             bcatcstr(bodyglsl, ",\n");
     }
 
+    // Figure and declare counters and their binds (we also postponed buffer reflection until now)
+    for (auto it = m_BufferReflections.begin(); it != m_BufferReflections.end(); ++it)
+    {
+        uint32_t bind = it->second.bind;
+        if (it->second.hasCounter)
+        {
+            const uint32_t counterBind = m_BufferSlots.PeekFirstFreeSlot();
+            m_BufferSlots.ReserveBindingSlot(counterBind, BindingSlotAllocator::UAV);
+
+            bformata(bodyglsl, ",\n\t\tdevice atomic_uint* %s_counter [[ buffer(%d) ]]", it->first.c_str(), counterBind);
+
+            // Offset with 1 so we can capture counters that are bound to slot 0 (if, say, user decides to start buffers at register 1 or higher)
+            bind |= ((counterBind + 1) << 16);
+        }
+        psContext->m_Reflection.OnBufferBinding(it->first, bind, it->second.isUAV);
+    }
+
     bcatcstr(bodyglsl, ")\n{\n");
 
     if (popPragmaDiagnostic)
@@ -474,6 +517,33 @@ bool ToMetal::Translate()
 
     if (psShader->eShaderType != COMPUTE_SHADER)
     {
+        if (psShader->eShaderType == VERTEX_SHADER)
+        {
+            // Fix HLSL compatibility with DrawProceduralIndirect, SV_InstanceID always starts at 0 but with Metal, a base instance was not subtracted for equal behavior
+            // Base semantics available everywhere starting with iOS9 (except hardware limitation exists with the original Apple A7/A8 GPUs, causing UNITY_SUPPORT_INDIRECT_BUFFERS=0)
+            std::for_each(m_StructDefinitions[""].m_Members.begin(), m_StructDefinitions[""].m_Members.end(), [&](MemberDefinitions::value_type &mem)
+            {
+                if (mem.first == "mtl_InstanceID")
+                {
+                    bcatcstr(bodyglsl, "#if !UNITY_SUPPORT_INDIRECT_BUFFERS\n");
+                    psContext->AddIndentation();
+                    bcatcstr(bodyglsl, "mtl_BaseInstance = 0;\n");
+                    bcatcstr(bodyglsl, "#endif\n");
+                    psContext->AddIndentation();
+                    bcatcstr(bodyglsl, "mtl_InstanceID = mtl_InstanceID - mtl_BaseInstance;\n");
+                }
+                else if (mem.first == "mtl_VertexID")
+                {
+                    bcatcstr(bodyglsl, "#if !UNITY_SUPPORT_INDIRECT_BUFFERS\n");
+                    psContext->AddIndentation();
+                    bcatcstr(bodyglsl, "mtl_BaseVertex = 0;\n");
+                    bcatcstr(bodyglsl, "#endif\n");
+                    psContext->AddIndentation();
+                    bcatcstr(bodyglsl, "mtl_VertexID = mtl_VertexID - mtl_BaseVertex;\n");
+                }
+            });
+        }
+
         if (m_StructDefinitions[GetOutputStructName().c_str()].m_Members.size() > 0)
         {
             psContext->AddIndentation();
@@ -498,7 +568,9 @@ bool ToMetal::Translate()
         bcatcstr(bodyglsl, "const bool patchValid = (patchID < patchInfo.numPatches);\n");
 
         psContext->AddIndentation();
-        bcatcstr(bodyglsl, "const uint mtl_InstanceID = groupID.y;\n");
+        bcatcstr(bodyglsl, "const uint mtl_BaseInstance = 0;\n");
+        psContext->AddIndentation();
+        bcatcstr(bodyglsl, "const uint mtl_InstanceID = groupID.y - mtl_BaseInstance;\n");
         psContext->AddIndentation();
         bcatcstr(bodyglsl, "const uint internalPatchID = mtl_InstanceID * patchInfo.numPatches + patchID;\n");
         psContext->AddIndentation();
@@ -507,7 +579,9 @@ bool ToMetal::Translate()
         psContext->AddIndentation();
         bcatcstr(bodyglsl, "const uint controlPointID = (tID.x % patchInfo.numControlPointsPerPatch);\n");
         psContext->AddIndentation();
-        bcatcstr(bodyglsl, "const uint mtl_VertexID = (mtl_InstanceID * (patchInfo.numControlPointsPerPatch * patchInfo.numPatches)) + tID.x;\n");
+        bcatcstr(bodyglsl, "const uint mtl_BaseVertex = 0;\n");
+        psContext->AddIndentation();
+        bcatcstr(bodyglsl, "const uint mtl_VertexID = ((mtl_InstanceID * (patchInfo.numControlPointsPerPatch * patchInfo.numPatches)) + tID.x) - mtl_BaseVertex;\n");
 
         psContext->AddIndentation();
         bformata(bodyglsl, "threadgroup %s inputGroup[numPatchesInThreadGroup];\n", GetInputStructName().c_str());
@@ -563,15 +637,19 @@ bool ToMetal::Translate()
 
                 if (psPhase->earlyMain->slen > 1)
                 {
-#ifdef _DEBUG
-                    psContext->AddIndentation();
-                    bcatcstr(bodyglsl, "//--- Start Early Main ---\n");
-#endif
+                    if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+                    {
+                        psContext->AddIndentation();
+                        bcatcstr(bodyglsl, "//--- Start Early Main ---\n");
+                    }
+
                     bconcat(bodyglsl, psPhase->earlyMain);
-#ifdef _DEBUG
-                    psContext->AddIndentation();
-                    bcatcstr(bodyglsl, "//--- End Early Main ---\n");
-#endif
+
+                    if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+                    {
+                        psContext->AddIndentation();
+                        bcatcstr(bodyglsl, "//--- End Early Main ---\n");
+                    }
                 }
 
                 psContext->AddIndentation();
@@ -618,15 +696,19 @@ bool ToMetal::Translate()
 
                 if (psPhase->hasPostShaderCode)
                 {
-#ifdef _DEBUG
-                    psContext->AddIndentation();
-                    bcatcstr(bodyglsl, "//--- Post shader code ---\n");
-#endif
+                    if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+                    {
+                        psContext->AddIndentation();
+                        bcatcstr(bodyglsl, "//--- Post shader code ---\n");
+                    }
+
                     bconcat(bodyglsl, psPhase->postShaderCode);
-#ifdef _DEBUG
-                    psContext->AddIndentation();
-                    bcatcstr(bodyglsl, "//--- End post shader code ---\n");
-#endif
+
+                    if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+                    {
+                        psContext->AddIndentation();
+                        bcatcstr(bodyglsl, "//--- End post shader code ---\n");
+                    }
                 }
 
                 if (psShader->asPhases[ui32Phase].ePhase == HS_CTRL_POINT_PHASE)
@@ -676,15 +758,19 @@ bool ToMetal::Translate()
     {
         if (psContext->psShader->asPhases[0].earlyMain->slen > 1)
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(bodyglsl, "//--- Start Early Main ---\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(bodyglsl, "//--- Start Early Main ---\n");
+            }
+
             bconcat(bodyglsl, psContext->psShader->asPhases[0].earlyMain);
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(bodyglsl, "//--- End Early Main ---\n");
-#endif
+
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(bodyglsl, "//--- End Early Main ---\n");
+            }
         }
 
         for (i = 0; i < psShader->asPhases[0].psInst.size(); ++i)

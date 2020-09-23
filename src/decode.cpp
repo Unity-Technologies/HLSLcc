@@ -696,7 +696,6 @@ const uint32_t* DecodeDeclaration(Shader* psShader, const uint32_t* pui32Token, 
 //              int iTupleSrc = 0, iTupleDest = 0;
                 //const uint32_t ui32ConstCount = pui32Token[1] - 2;
                 //const uint32_t ui32TupleCount = (ui32ConstCount / 4);
-                /*CUSTOMDATA_CLASS eClass =*/ DecodeCustomDataClass(pui32Token[0]);
 
                 const uint32_t ui32NumVec4 = (ui32TokenLength - 2) / 4;
 
@@ -841,6 +840,7 @@ const uint32_t* DecodeInstruction(const uint32_t* pui32Token, Instruction* psIns
     psInst->eOpcode = eOpcode;
 
     psInst->bSaturate = DecodeInstructionSaturate(*pui32Token);
+    psInst->ui32PreciseMask = DecodeInstructionPreciseMask(*pui32Token);
 
     psInst->bAddressOffset = 0;
 
@@ -1386,7 +1386,6 @@ const void AllocateHullPhaseArrays(const uint32_t* pui32Tokens,
     while (1) //Keep going until we reach the first non-declaration token, or the end of the shader.
     {
         uint32_t ui32TokenLength = DecodeInstructionLength(*pui32CurrentToken);
-        /*const uint32_t bExtended =*/ DecodeIsOpcodeExtended(*pui32CurrentToken);
         const OPCODE_TYPE eOpcode = DecodeOpcodeType(*pui32CurrentToken);
 
         if (eOpcode == OPCODE_CUSTOMDATA)

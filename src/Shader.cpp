@@ -65,51 +65,11 @@ void Shader::ConsolidateHullTempVars()
     }
 }
 
-// HLSL has separate register spaces for UAV and structured buffers. GLSL has shared register space for all buffers.
-// The aim here is to preserve the UAV buffer bindings as they are and use remaining binding points for structured buffers.
-// In this step make aui32StructuredBufferBindingPoints contain increasingly ordered uints starting from zero.
-void Shader::PrepareStructuredBufferBindingSlots()
-{
-    uint32_t i;
-
-    for (i = 0; i < MAX_RESOURCE_BINDINGS; i++)
-    {
-        aui32StructuredBufferBindingPoints[i] = i;
-    }
-}
-
-// Go through all declarations and remove UAV occupied binding points from the aui32StructuredBufferBindingPoints list
-void Shader::ResolveStructuredBufferBindingSlots(ShaderPhase *psPhase)
-{
-    uint32_t p;
-    std::vector<uint32_t> &bindingArray = aui32StructuredBufferBindingPoints;
-
-    for (p = 0; p < psPhase->psDecl.size(); ++p)
-    {
-        if (psPhase->psDecl[p].eOpcode == OPCODE_DCL_UNORDERED_ACCESS_VIEW_RAW ||
-            psPhase->psDecl[p].eOpcode == OPCODE_DCL_UNORDERED_ACCESS_VIEW_STRUCTURED)
-        {
-            uint32_t uav = psPhase->psDecl[p].asOperands[0].ui32RegisterNumber; // uav binding point
-            uint32_t i;
-
-            // Find uav binding point from the list. Drop search if not found.
-            for (i = 0; i < MAX_RESOURCE_BINDINGS && bindingArray[i] <= uav; i++)
-            {
-                if (bindingArray[i] == uav) // Remove uav binding point from the list by copying array remainder here
-                {
-                    memcpy(&bindingArray[i], &bindingArray[i + 1], (MAX_RESOURCE_BINDINGS - 1 - i) * sizeof(uint32_t));
-                    break;
-                }
-            }
-        }
-    }
-}
-
 // Image (RWTexture in HLSL) declaration op does not provide enough info about the format and accessing.
 // Go through all image declarations and instructions accessing it to see if it is readonly/writeonly.
 // While doing that we also get the number of components expected in the image format.
 // Also resolve access flags for other UAVs as well. No component count resolving for them.
-void ShaderPhase::ResolveUAVProperties()
+void ShaderPhase::ResolveUAVProperties(const ShaderInfo& sInfo)
 {
     Declaration *psFirstDeclaration = &psDecl[0];
 
@@ -163,8 +123,10 @@ void ShaderPhase::ResolveUAVProperties()
                 case OPCODE_ATOMIC_XOR:
                 case OPCODE_ATOMIC_IMIN:
                 case OPCODE_ATOMIC_UMIN:
+                case OPCODE_ATOMIC_IMAX:
+                case OPCODE_ATOMIC_UMAX:
                     opIndex = 0;
-                    accessFlags = ACCESS_FLAG_READ | ACCESS_FLAG_WRITE;
+                    accessFlags = ACCESS_FLAG_READ | ACCESS_FLAG_WRITE | ACCESS_FLAG_ATOMIC;
                     numComponents = 1;
                     break;
 
@@ -179,7 +141,7 @@ void ShaderPhase::ResolveUAVProperties()
                 case OPCODE_IMM_ATOMIC_EXCH:
                 case OPCODE_IMM_ATOMIC_CMP_EXCH:
                     opIndex = 1;
-                    accessFlags = ACCESS_FLAG_READ | ACCESS_FLAG_WRITE;
+                    accessFlags = ACCESS_FLAG_READ | ACCESS_FLAG_WRITE | ACCESS_FLAG_ATOMIC;
                     numComponents = 1;
                     break;
 
@@ -211,7 +173,7 @@ void ShaderPhase::ResolveUAVProperties()
                 case OPCODE_IMM_ATOMIC_ALLOC:
                 case OPCODE_IMM_ATOMIC_CONSUME:
                     opIndex = 1;
-                    accessFlags = ACCESS_FLAG_READ | ACCESS_FLAG_WRITE;
+                    accessFlags = ACCESS_FLAG_READ | ACCESS_FLAG_WRITE | ACCESS_FLAG_ATOMIC;
                     numComponents = 0;
                     break;
 
@@ -233,6 +195,16 @@ void ShaderPhase::ResolveUAVProperties()
             if (numComponents > psDecl->sUAV.ui32NumComponents && psDecl->eOpcode == OPCODE_DCL_UNORDERED_ACCESS_VIEW_TYPED)
             {
                 psDecl->sUAV.ui32NumComponents = numComponents;
+            }
+        }
+
+        if (psDecl->eOpcode == OPCODE_DCL_UNORDERED_ACCESS_VIEW_TYPED)
+        {
+            const ResourceBinding* psBinding = 0;
+            if (sInfo.GetResourceFromBindingPoint(RGROUP_UAV, uavReg, &psBinding))
+            {
+                // component count is stored in flags as 2 bits, 00: vec1, 01: vec2, 10: vec3, 11: vec4
+                psDecl->sUAV.ui32NumComponents = ((psBinding->ui32Flags >> 2) & 3) + 1;
             }
         }
     }
@@ -601,6 +573,18 @@ void Shader::AnalyzeIOOverlap()
     }
 }
 
+void Shader::SetMaxSemanticIndex()
+{
+    for (std::vector<ShaderInfo::InOutSignature>::iterator it = sInfo.psInputSignatures.begin(); it != sInfo.psInputSignatures.end(); ++it)
+        maxSemanticIndex = std::max(maxSemanticIndex, it->ui32SemanticIndex);
+
+    for (std::vector<ShaderInfo::InOutSignature>::iterator it = sInfo.psOutputSignatures.begin(); it != sInfo.psOutputSignatures.end(); ++it)
+        maxSemanticIndex = std::max(maxSemanticIndex, it->ui32SemanticIndex);
+
+    for (std::vector<ShaderInfo::InOutSignature>::iterator it = sInfo.psPatchConstantSignatures.begin(); it != sInfo.psPatchConstantSignatures.end(); ++it)
+        maxSemanticIndex = std::max(maxSemanticIndex, it->ui32SemanticIndex);
+}
+
 // In DX bytecode, all const arrays are vec4's, and all arrays are stuffed to one large array.
 // Luckily, each chunk is always accessed with suboperand plus <constant> (in ui32RegisterNumber)
 // So do an analysis pass. Also trim the vec4's into smaller formats if the extra components are never read.
@@ -753,7 +737,7 @@ HLSLcc::ControlFlow::ControlFlowGraph &ShaderPhase::GetCFG()
 {
     if (!m_CFGInitialized)
     {
-        m_CFG.Build(&psInst[0]);
+        m_CFG.Build(psInst.data(), psInst.data() + psInst.size());
         m_CFGInitialized = true;
     }
 

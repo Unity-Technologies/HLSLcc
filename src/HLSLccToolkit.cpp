@@ -96,8 +96,7 @@ namespace HLSLcc
         }
     }
 
-    const char * GetConstructorForTypeMetal(const SHADER_VARIABLE_TYPE eType,
-        const int components)
+    const char * GetConstructorForTypeMetal(const SHADER_VARIABLE_TYPE eType, const int components)
     {
         static const char * const uintTypes[] = { " ", "uint", "uint2", "uint3", "uint4" };
         static const char * const ushortTypes[] = { " ", "ushort", "ushort2", "ushort3", "ushort4" };
@@ -114,6 +113,7 @@ namespace HLSLcc
             case SVT_UINT:
                 return uintTypes[components];
             case SVT_UINT16:
+            case SVT_UINT8: // there is not uint8 in metal so treat it as ushort
                 return ushortTypes[components];
             case SVT_INT:
                 return intTypes[components];
@@ -304,6 +304,47 @@ namespace HLSLcc
         }
     }
 
+    RESOURCE_RETURN_TYPE SVTTypeToResourceReturnType(SHADER_VARIABLE_TYPE type)
+    {
+        switch (type)
+        {
+            case SVT_INT:
+            case SVT_INT12:
+            case SVT_INT16:
+                return RETURN_TYPE_SINT;
+            case SVT_UINT:
+            case SVT_UINT16:
+                return RETURN_TYPE_UINT;
+            case SVT_FLOAT:
+            case SVT_FLOAT10:
+            case SVT_FLOAT16:
+                return RETURN_TYPE_FLOAT;
+            default:
+                return RETURN_TYPE_UNUSED;
+        }
+    }
+
+    REFLECT_RESOURCE_PRECISION SVTTypeToPrecision(SHADER_VARIABLE_TYPE type)
+    {
+        switch (type)
+        {
+            case SVT_INT:
+            case SVT_UINT:
+            case SVT_FLOAT:
+                return REFLECT_RESOURCE_PRECISION_HIGHP;
+            case SVT_INT16:
+            case SVT_UINT16:
+            case SVT_FLOAT16:
+                return REFLECT_RESOURCE_PRECISION_MEDIUMP;
+            case SVT_INT12:
+            case SVT_FLOAT10:
+            case SVT_UINT8:
+                return REFLECT_RESOURCE_PRECISION_LOWP;
+            default:
+                return REFLECT_RESOURCE_PRECISION_UNKNOWN;
+        }
+    }
+
     uint32_t ElemCountToAutoExpandFlag(uint32_t elemCount)
     {
         return TO_AUTO_EXPAND_TO_VEC2 << (elemCount - 2);
@@ -454,8 +495,8 @@ namespace HLSLcc
 
         if (context->psShader->eTargetLanguage == LANG_METAL)
         {
-            // avoid compiler error: cannot use as_type to cast from 'half' to 'unsigned int', types of different size
-            if ((src == SVT_FLOAT16 || src == SVT_FLOAT10) && (dest == SVT_UINT))
+            // avoid compiler error: cannot use as_type to cast from 'half' to 'unsigned int' or 'int', types of different size
+            if ((src == SVT_FLOAT16 || src == SVT_FLOAT10) && (dest == SVT_UINT || dest == SVT_INT))
                 return true;
         }
 

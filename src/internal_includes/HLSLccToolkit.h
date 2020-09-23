@@ -41,6 +41,10 @@ namespace HLSLcc
 
     SHADER_VARIABLE_TYPE ResourceReturnTypeToSVTType(const RESOURCE_RETURN_TYPE eType, const REFLECT_RESOURCE_PRECISION ePrec);
 
+    RESOURCE_RETURN_TYPE SVTTypeToResourceReturnType(SHADER_VARIABLE_TYPE type);
+
+    REFLECT_RESOURCE_PRECISION SVTTypeToPrecision(SHADER_VARIABLE_TYPE type);
+
     uint32_t ElemCountToAutoExpandFlag(uint32_t elemCount);
 
     bool IsOperationCommutative(int /* OPCODE_TYPE */ eOpCode);

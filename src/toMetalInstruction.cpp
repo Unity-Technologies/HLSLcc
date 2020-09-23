@@ -20,128 +20,68 @@ bstring operator<<(bstring a, const std::string &b)
     return a;
 }
 
+static void AddOpAssignToDest(bstring glsl, SHADER_VARIABLE_TYPE eSrcType, uint32_t ui32SrcElementCount, SHADER_VARIABLE_TYPE eDestType, uint32_t ui32DestElementCount, uint32_t precise, int& numParenthesis, bool allowReinterpretCast = true)
+{
+    numParenthesis = 0;
+
+    // Find out from type the precisions and types without precision
+    RESOURCE_RETURN_TYPE srcBareType = SVTTypeToResourceReturnType(eSrcType);
+    RESOURCE_RETURN_TYPE dstBareType = SVTTypeToResourceReturnType(eDestType);
+    REFLECT_RESOURCE_PRECISION srcPrec = SVTTypeToPrecision(eSrcType);
+    REFLECT_RESOURCE_PRECISION dstPrec = SVTTypeToPrecision(eDestType);
+
+    // Add assigment
+    bcatcstr(glsl, " = ");
+
+    /* TODO: implement precise for metal
+    if (precise)
+    {
+        bcatcstr(glsl, "u_xlat_precise(");
+        numParenthesis++;
+    }*/
+
+    // Special reinterpret cast between float<->uint/int if size matches
+    // TODO: Handle bools?
+    if (srcBareType != dstBareType && (srcBareType == RETURN_TYPE_FLOAT || dstBareType == RETURN_TYPE_FLOAT) && srcPrec == dstPrec && allowReinterpretCast)
+    {
+        bformata(glsl, "as_type<%s>(", GetConstructorForTypeMetal(eDestType, ui32DestElementCount));
+        numParenthesis++;
+        if (ui32DestElementCount > ui32SrcElementCount)
+        {
+            bformata(glsl, "%s(", GetConstructorForTypeMetal(eSrcType, ui32DestElementCount));
+            numParenthesis++;
+        }
+        return;
+    }
+
+    // Do cast in case of type missmatch or dimension
+    if (eSrcType != eDestType || ui32DestElementCount > ui32SrcElementCount)
+    {
+        bformata(glsl, "%s(", GetConstructorForTypeMetal(eDestType, ui32DestElementCount));
+        numParenthesis++;
+        return;
+    }
+}
+
 // This function prints out the destination name, possible destination writemask, assignment operator
 // and any possible conversions needed based on the eSrcType+ui32SrcElementCount (type and size of data expected to be coming in)
 // As an output, pNeedsParenthesis will be filled with the amount of closing parenthesis needed
 // and pSrcCount will be filled with the number of components expected
 // ui32CompMask can be used to only write to 1 or more components (used by MOVC)
 void ToMetal::AddOpAssignToDestWithMask(const Operand* psDest,
-    SHADER_VARIABLE_TYPE eSrcType, uint32_t ui32SrcElementCount, const char *szAssignmentOp, int *pNeedsParenthesis, uint32_t ui32CompMask)
+    SHADER_VARIABLE_TYPE eSrcType, uint32_t ui32SrcElementCount, uint32_t precise, int& numParenthesis, uint32_t ui32CompMask)
 {
     uint32_t ui32DestElementCount = psDest->GetNumSwizzleElements(ui32CompMask);
     bstring glsl = *psContext->currentGLSLString;
-    SHADER_VARIABLE_TYPE eDestDataType = psDest->GetDataType(psContext);
-    ASSERT(pNeedsParenthesis != NULL);
-
-    *pNeedsParenthesis = 0;
-
+    SHADER_VARIABLE_TYPE eDestType = psDest->GetDataType(psContext);
     glsl << TranslateOperand(psDest, TO_FLAG_DESTINATION, ui32CompMask);
-
-    // Simple path: types match.
-    if (eDestDataType == eSrcType)
-    {
-        // Cover cases where the HLSL language expects the rest of the components to be default-filled
-        // eg. MOV r0, c0.x => Temp[0] = vec4(c0.x);
-        if (ui32DestElementCount > ui32SrcElementCount)
-        {
-            bformata(glsl, " %s %s(", szAssignmentOp, GetConstructorForTypeMetal(eDestDataType, ui32DestElementCount));
-            *pNeedsParenthesis = 1;
-        }
-        else
-            bformata(glsl, " %s ", szAssignmentOp);
-        return;
-    }
-    // Up/downscaling with cast. The monster of condition there checks if the underlying datatypes are the same, just with prec differences
-    if (((eDestDataType == SVT_FLOAT || eDestDataType == SVT_FLOAT16 || eDestDataType == SVT_FLOAT10) && (eSrcType == SVT_FLOAT || eSrcType == SVT_FLOAT16 || eSrcType == SVT_FLOAT10))
-        || ((eDestDataType == SVT_INT || eDestDataType == SVT_INT16 || eDestDataType == SVT_INT12) && (eSrcType == SVT_INT || eSrcType == SVT_INT16 || eSrcType == SVT_INT12))
-        || ((eDestDataType == SVT_UINT || eDestDataType == SVT_UINT16) && (eSrcType == SVT_UINT || eSrcType == SVT_UINT16)))
-    {
-        bformata(glsl, " %s %s(", szAssignmentOp, GetConstructorForTypeMetal(eDestDataType, ui32DestElementCount));
-        *pNeedsParenthesis = 1;
-        return;
-    }
-
-    switch (eDestDataType)
-    {
-        case SVT_INT:
-        case SVT_INT12:
-        case SVT_INT16:
-            // Bitcasts from lower precisions are ambiguous
-            ASSERT(eSrcType != SVT_FLOAT10 && eSrcType != SVT_FLOAT16);
-            if (eSrcType == SVT_FLOAT)
-            {
-                if (ui32DestElementCount > 1)
-                    bformata(glsl, " %s as_type<int%d>(", szAssignmentOp, ui32DestElementCount);
-                else
-                    bformata(glsl, " %s as_type<int>(", szAssignmentOp);
-
-                // Cover cases where the HLSL language expects the rest of the components to be default-filled
-                if (ui32DestElementCount > ui32SrcElementCount)
-                {
-                    bformata(glsl, "%s(", GetConstructorForTypeMetal(eSrcType, ui32DestElementCount));
-                    (*pNeedsParenthesis)++;
-                }
-            }
-            else
-                bformata(glsl, " %s %s(", szAssignmentOp, GetConstructorForTypeMetal(eDestDataType, ui32DestElementCount));
-
-            (*pNeedsParenthesis)++;
-            break;
-        case SVT_UINT:
-        case SVT_UINT16:
-            ASSERT(eSrcType != SVT_FLOAT10 && eSrcType != SVT_FLOAT16);
-            if (eSrcType == SVT_FLOAT)
-            {
-                if (ui32DestElementCount > 1)
-                    bformata(glsl, " %s as_type<uint%d>(", szAssignmentOp, ui32DestElementCount);
-                else
-                    bformata(glsl, " %s as_type<uint>(", szAssignmentOp);
-                // Cover cases where the HLSL language expects the rest of the components to be default-filled
-                if (ui32DestElementCount > ui32SrcElementCount)
-                {
-                    bformata(glsl, "%s(", GetConstructorForTypeMetal(eSrcType, ui32DestElementCount));
-                    (*pNeedsParenthesis)++;
-                }
-            }
-            else
-                bformata(glsl, " %s %s(", szAssignmentOp, GetConstructorForTypeMetal(eDestDataType, ui32DestElementCount));
-
-            (*pNeedsParenthesis)++;
-            break;
-
-        case SVT_FLOAT:
-        case SVT_FLOAT10:
-        case SVT_FLOAT16:
-            ASSERT(eSrcType != SVT_INT12 || (eSrcType != SVT_INT16 && eSrcType != SVT_UINT16));
-            if (psContext->psShader->ui32MajorVersion > 3)
-            {
-                if (ui32DestElementCount > 1)
-                    bformata(glsl, " %s as_type<float%d>(", szAssignmentOp, ui32DestElementCount);
-                else
-                    bformata(glsl, " %s as_type<float>(", szAssignmentOp);
-                // Cover cases where the HLSL language expects the rest of the components to be default-filled
-                if (ui32DestElementCount > ui32SrcElementCount)
-                {
-                    bformata(glsl, "%s(", GetConstructorForTypeMetal(eSrcType, ui32DestElementCount));
-                    (*pNeedsParenthesis)++;
-                }
-            }
-            else
-                bformata(glsl, " %s %s(", szAssignmentOp, GetConstructorForTypeMetal(eDestDataType, ui32DestElementCount));
-
-            (*pNeedsParenthesis)++;
-            break;
-        default:
-            // TODO: Handle bools?
-            ASSERT(0);
-            break;
-    }
+    AddOpAssignToDest(glsl, eSrcType, ui32SrcElementCount, eDestType, ui32DestElementCount, precise, numParenthesis, psContext->psShader->ui32MajorVersion > 3);
 }
 
 void ToMetal::AddAssignToDest(const Operand* psDest,
-    SHADER_VARIABLE_TYPE eSrcType, uint32_t ui32SrcElementCount, int* pNeedsParenthesis)
+    SHADER_VARIABLE_TYPE eSrcType, uint32_t ui32SrcElementCount, uint32_t precise, int& numParenthesis)
 {
-    AddOpAssignToDestWithMask(psDest, eSrcType, ui32SrcElementCount, "=", pNeedsParenthesis, OPERAND_4_COMPONENT_MASK_ALL);
+    AddOpAssignToDestWithMask(psDest, eSrcType, ui32SrcElementCount, precise, numParenthesis, OPERAND_4_COMPONENT_MASK_ALL);
 }
 
 void ToMetal::AddAssignPrologue(int numParenthesis)
@@ -199,7 +139,7 @@ void ToMetal::AddComparison(Instruction* psInst, ComparisonType eType,
         }
         else
         {
-            AddAssignToDest(&psInst->asOperands[0], SVT_UINT, destElemCount, &needsParenthesis);
+            AddAssignToDest(&psInst->asOperands[0], SVT_UINT, destElemCount, psInst->ui32PreciseMask, needsParenthesis);
 
             bcatcstr(glsl, GetConstructorForTypeMetal(SVT_UINT, destElemCount));
             bcatcstr(glsl, "(");
@@ -236,7 +176,7 @@ void ToMetal::AddComparison(Instruction* psInst, ComparisonType eType,
         }
         else
         {
-            AddAssignToDest(&psInst->asOperands[0], SVT_UINT, destElemCount, &needsParenthesis);
+            AddAssignToDest(&psInst->asOperands[0], SVT_UINT, destElemCount, psInst->ui32PreciseMask, needsParenthesis);
             bcatcstr(glsl, "(");
         }
         glsl << TranslateOperand(&psInst->asOperands[1], typeFlag, destMask);
@@ -270,7 +210,7 @@ bool ToMetal::CanForceToHalfOperand(const Operand *psOperand)
     return false;
 }
 
-void ToMetal::AddMOVBinaryOp(const Operand *pDest, Operand *pSrc)
+void ToMetal::AddMOVBinaryOp(const Operand *pDest, Operand *pSrc, uint32_t precise)
 {
     bstring glsl = *psContext->currentGLSLString;
     int numParenthesis = 0;
@@ -280,13 +220,13 @@ void ToMetal::AddMOVBinaryOp(const Operand *pDest, Operand *pSrc)
     const SHADER_VARIABLE_TYPE eSrcType = pSrc->GetDataType(psContext, pDest->GetDataType(psContext));
     uint32_t flags = SVTTypeToFlag(eSrcType);
 
-    AddAssignToDest(pDest, eSrcType, srcSwizzleCount, &numParenthesis);
+    AddAssignToDest(pDest, eSrcType, srcSwizzleCount, precise, numParenthesis);
     glsl << TranslateOperand(pSrc, flags, writeMask);
 
     AddAssignPrologue(numParenthesis);
 }
 
-void ToMetal::AddMOVCBinaryOp(const Operand *pDest, const Operand *src0, Operand *src1, Operand *src2)
+void ToMetal::AddMOVCBinaryOp(const Operand *pDest, const Operand *src0, Operand *src1, Operand *src2, uint32_t precise)
 {
     bstring glsl = *psContext->currentGLSLString;
     uint32_t destElemCount = pDest->GetNumSwizzleElements();
@@ -317,7 +257,7 @@ void ToMetal::AddMOVCBinaryOp(const Operand *pDest, const Operand *src0, Operand
         int numParenthesis = 0;
         SHADER_VARIABLE_TYPE s0Type = src0->GetDataType(psContext);
         psContext->AddIndentation();
-        AddAssignToDest(pDest, eDestType, destElemCount, &numParenthesis);
+        AddAssignToDest(pDest, eDestType, destElemCount, precise, numParenthesis);
         bcatcstr(glsl, "(");
         if (s0Type == SVT_UINT || s0Type == SVT_UINT16)
             glsl << TranslateOperand(src0, TO_AUTO_BITCAST_TO_UINT, OPERAND_4_COMPONENT_MASK_X);
@@ -356,7 +296,6 @@ void ToMetal::AddMOVCBinaryOp(const Operand *pDest, const Operand *src0, Operand
     }
     else
     {
-        // TODO: We can actually do this in one op using mix().
         int srcElem = -1;
         SHADER_VARIABLE_TYPE dstType = pDest->GetDataType(psContext);
         SHADER_VARIABLE_TYPE s0Type = src0->GetDataType(psContext);
@@ -394,7 +333,7 @@ void ToMetal::AddMOVCBinaryOp(const Operand *pDest, const Operand *src0, Operand
                 continue;
 
             psContext->AddIndentation();
-            AddOpAssignToDestWithMask(pDest, eDestType, 1, "=", &numParenthesis, 1 << destElem);
+            AddOpAssignToDestWithMask(pDest, eDestType, 1, precise, numParenthesis, 1 << destElem);
             bcatcstr(glsl, "(");
             if (s0Type == SVT_BOOL)
             {
@@ -465,7 +404,7 @@ void ToMetal::CallBinaryOp(const char* name, Instruction* psInst,
 
     psContext->AddIndentation();
 
-    AddAssignToDest(&psInst->asOperands[dest], eDataType, dstSwizCount, &needsParenthesis);
+    AddAssignToDest(&psInst->asOperands[dest], eDataType, dstSwizCount, psInst->ui32PreciseMask, needsParenthesis);
 
 /*  bool s0NeedsUpscaling = false, s1NeedsUpscaling = false;
     SHADER_VARIABLE_TYPE s0Type = psInst->asOperands[src0].GetDataType(psContext);
@@ -508,7 +447,7 @@ void ToMetal::CallTernaryOp(const char* op1, const char* op2, Instruction* psIns
 
     psContext->AddIndentation();
 
-    AddAssignToDest(&psInst->asOperands[dest], TypeFlagsToSVTType(dataType), dstSwizCount, &numParenthesis);
+    AddAssignToDest(&psInst->asOperands[dest], TypeFlagsToSVTType(dataType), dstSwizCount, psInst->ui32PreciseMask, numParenthesis);
 
     glsl << TranslateOperand(&psInst->asOperands[src0], ui32Flags, destMask);
     bformata(glsl, " %s ", op1);
@@ -543,7 +482,7 @@ void ToMetal::CallHelper3(const char* name, Instruction* psInst,
 
     psContext->AddIndentation();
 
-    AddAssignToDest(&psInst->asOperands[dest], ui32Flags & TO_FLAG_FORCE_HALF ? SVT_FLOAT16 : SVT_FLOAT, dstSwizCount, &numParenthesis);
+    AddAssignToDest(&psInst->asOperands[dest], ui32Flags & TO_FLAG_FORCE_HALF ? SVT_FLOAT16 : SVT_FLOAT, dstSwizCount, psInst->ui32PreciseMask, numParenthesis);
 
     bformata(glsl, "%s(", name);
     numParenthesis++;
@@ -587,7 +526,7 @@ void ToMetal::CallHelper2(const char* name, Instruction* psInst,
     }
 
     psContext->AddIndentation();
-    AddAssignToDest(&psInst->asOperands[dest], ui32Flags & TO_FLAG_FORCE_HALF ? SVT_FLOAT16 : SVT_FLOAT, isDotProduct ? 1 : dstSwizCount, &numParenthesis);
+    AddAssignToDest(&psInst->asOperands[dest], ui32Flags & TO_FLAG_FORCE_HALF ? SVT_FLOAT16 : SVT_FLOAT, isDotProduct ? 1 : dstSwizCount, psInst->ui32PreciseMask, numParenthesis);
 
     bformata(glsl, "%s(", name);
     numParenthesis++;
@@ -618,7 +557,7 @@ void ToMetal::CallHelper2Int(const char* name, Instruction* psInst,
 
     psContext->AddIndentation();
 
-    AddAssignToDest(&psInst->asOperands[dest], SVT_INT, dstSwizCount, &numParenthesis);
+    AddAssignToDest(&psInst->asOperands[dest], SVT_INT, dstSwizCount, psInst->ui32PreciseMask, numParenthesis);
 
     bformata(glsl, "%s(", name);
     numParenthesis++;
@@ -647,7 +586,7 @@ void ToMetal::CallHelper2UInt(const char* name, Instruction* psInst,
 
     psContext->AddIndentation();
 
-    AddAssignToDest(&psInst->asOperands[dest], SVT_UINT, dstSwizCount, &numParenthesis);
+    AddAssignToDest(&psInst->asOperands[dest], SVT_UINT, dstSwizCount, psInst->ui32PreciseMask, numParenthesis);
 
     bformata(glsl, "%s(", name);
     numParenthesis++;
@@ -671,7 +610,7 @@ void ToMetal::CallHelper1(const char* name, Instruction* psInst,
         && CanForceToHalfOperand(&psInst->asOperands[src0]))
         ui32Flags = TO_FLAG_FORCE_HALF | TO_AUTO_BITCAST_TO_FLOAT;
 
-    AddAssignToDest(&psInst->asOperands[dest], ui32Flags & TO_FLAG_FORCE_HALF ? SVT_FLOAT16 : SVT_FLOAT, dstSwizCount, &numParenthesis);
+    AddAssignToDest(&psInst->asOperands[dest], ui32Flags & TO_FLAG_FORCE_HALF ? SVT_FLOAT16 : SVT_FLOAT, dstSwizCount, psInst->ui32PreciseMask, numParenthesis);
 
     bformata(glsl, "%s(", name);
     numParenthesis++;
@@ -695,7 +634,7 @@ void ToMetal::CallHelper1Int(
 
     psContext->AddIndentation();
 
-    AddAssignToDest(&psInst->asOperands[dest], SVT_INT, dstSwizCount, &numParenthesis);
+    AddAssignToDest(&psInst->asOperands[dest], SVT_INT, dstSwizCount, psInst->ui32PreciseMask, numParenthesis);
 
     bformata(glsl, "%s(", name);
     numParenthesis++;
@@ -710,7 +649,7 @@ void ToMetal::TranslateTexelFetch(
 {
     int numParenthesis = 0;
     psContext->AddIndentation();
-    AddAssignToDest(&psInst->asOperands[0], psContext->psShader->sInfo.GetTextureDataType(psInst->asOperands[2].ui32RegisterNumber), 4, &numParenthesis);
+    AddAssignToDest(&psInst->asOperands[0], psContext->psShader->sInfo.GetTextureDataType(psInst->asOperands[2].ui32RegisterNumber), 4, psInst->ui32PreciseMask, numParenthesis);
     glsl << TranslateOperand(&psInst->asOperands[2], TO_FLAG_NONE);
     bcatcstr(glsl, ".read(");
 
@@ -764,6 +703,11 @@ void ToMetal::TranslateTexelFetch(
             glsl << TranslateOperand(&psInst->asOperands[3], TO_FLAG_UNSIGNED_INTEGER, OPERAND_4_COMPONENT_MASK_X); // Sample index
             break;
         }
+        case REFLECT_RESOURCE_DIMENSION_TEXTURE2DMSARRAY:
+        {
+            psContext->m_Reflection.OnDiagnostics("Multisampled texture arrays not supported in Metal (in texel fetch)", 0, true);
+            return;
+        }
         case REFLECT_RESOURCE_DIMENSION_TEXTURECUBE:
         case REFLECT_RESOURCE_DIMENSION_TEXTURECUBEARRAY:
         case REFLECT_RESOURCE_DIMENSION_BUFFEREX:
@@ -787,7 +731,7 @@ void ToMetal::TranslateTexelFetchOffset(
 {
     int numParenthesis = 0;
     psContext->AddIndentation();
-    AddAssignToDest(&psInst->asOperands[0], psContext->psShader->sInfo.GetTextureDataType(psInst->asOperands[2].ui32RegisterNumber), 4, &numParenthesis);
+    AddAssignToDest(&psInst->asOperands[0], psContext->psShader->sInfo.GetTextureDataType(psInst->asOperands[2].ui32RegisterNumber), 4, psInst->ui32PreciseMask, numParenthesis);
 
     glsl << TranslateOperand(&psInst->asOperands[2], TO_FLAG_NONE);
     bcatcstr(glsl, ".read(");
@@ -966,7 +910,7 @@ void ToMetal::GetResInfoData(Instruction* psInst, int index, int destElem)
     const RESINFO_RETURN_TYPE eResInfoReturnType = psInst->eResInfoReturnType;
 
     psContext->AddIndentation();
-    AddOpAssignToDestWithMask(&psInst->asOperands[0], eResInfoReturnType == RESINFO_INSTRUCTION_RETURN_UINT ? SVT_UINT : SVT_FLOAT, 1, "=", &numParenthesis, 1 << destElem);
+    AddOpAssignToDestWithMask(&psInst->asOperands[0], eResInfoReturnType == RESINFO_INSTRUCTION_RETURN_UINT ? SVT_UINT : SVT_FLOAT, 1, psInst->ui32PreciseMask, numParenthesis, 1 << destElem);
 
     const char *metalGetters[] = { ".get_width(", ".get_height(", ".get_depth(", ".get_num_mip_levels()" };
     int dim = GetNumTextureDimensions(psInst->eResDim);
@@ -1110,7 +1054,7 @@ void ToMetal::TranslateTextureSample(Instruction* psInst,
 
     SHADER_VARIABLE_TYPE dataType = psContext->psShader->sInfo.GetTextureDataType(psSrcTex->ui32RegisterNumber);
     psContext->AddIndentation();
-    AddAssignToDest(psDest, dataType, psSrcTex->GetNumSwizzleElements(), &numParenthesis);
+    AddAssignToDest(psDest, dataType, psSrcTex->GetNumSwizzleElements(), psInst->ui32PreciseMask, numParenthesis);
 
     std::string texName = TranslateOperand(psSrcTex, TO_FLAG_NAME_ONLY);
 
@@ -1129,9 +1073,9 @@ void ToMetal::TranslateTextureSample(Instruction* psInst,
     }
 
     // Sampler name
-    //TODO: Is it ok to use fixed shadow sampler in all cases of depth compare or would we need more
-    // accurate way of detecting shadow cases (atm all depth compares are interpreted as shadow usage)
-    if (ui32Flags & TEXSMP_FLAG_DEPTHCOMPARE)
+    // on ios pre-GPUFamily3 we MUST have constexpr in shader for a sampler with compare func
+    // for now we use fixed shadow sampler in all cases of depth compare (ATM all depth compares are interpreted as shadow usage)
+    if (ui32Flags & TEXSMP_FLAG_DEPTHCOMPARE && IsMobileTarget(psContext))
     {
         bcatcstr(glsl, "_mtl_xl_shadow_sampler");
     }
@@ -1417,7 +1361,7 @@ void ToMetal::TranslateShaderStorageLoad(Instruction* psInst)
         srcOffFlag = TO_FLAG_INTEGER;
 
     psContext->AddIndentation();
-    AddAssignToDest(psDest, destDataType, destCount, &numParenthesis);
+    AddAssignToDest(psDest, destDataType, destCount, psInst->ui32PreciseMask, numParenthesis);
     if (destCount > 1)
     {
         bformata(glsl, "%s(", GetConstructorForTypeMetal(destDataType, destCount));
@@ -1492,17 +1436,16 @@ void ToMetal::TranslateAtomicMemOp(Instruction* psInst)
     Operand* compare = 0;
     int texDim = 0;
     bool isUint = true;
-    bool shouldAddFailMemoryOrder = false;
-    bool shouldExtractCompare = false;
 
     switch (psInst->eOpcode)
     {
         case OPCODE_IMM_ATOMIC_IADD:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//IMM_ATOMIC_IADD\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//IMM_ATOMIC_IADD\n");
+            }
             func = "atomic_fetch_add_explicit";
             previousValue = &psInst->asOperands[0];
             dest = &psInst->asOperands[1];
@@ -1512,10 +1455,11 @@ void ToMetal::TranslateAtomicMemOp(Instruction* psInst)
         }
         case OPCODE_ATOMIC_IADD:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//ATOMIC_IADD\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//ATOMIC_IADD\n");
+            }
             func = "atomic_fetch_add_explicit";
             dest = &psInst->asOperands[0];
             destAddr = &psInst->asOperands[1];
@@ -1524,10 +1468,11 @@ void ToMetal::TranslateAtomicMemOp(Instruction* psInst)
         }
         case OPCODE_IMM_ATOMIC_AND:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//IMM_ATOMIC_AND\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//IMM_ATOMIC_AND\n");
+            }
             func = "atomic_fetch_and_explicit";
             previousValue = &psInst->asOperands[0];
             dest = &psInst->asOperands[1];
@@ -1537,10 +1482,11 @@ void ToMetal::TranslateAtomicMemOp(Instruction* psInst)
         }
         case OPCODE_ATOMIC_AND:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//ATOMIC_AND\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//ATOMIC_AND\n");
+            }
             func = "atomic_fetch_and_explicit";
             dest = &psInst->asOperands[0];
             destAddr = &psInst->asOperands[1];
@@ -1549,10 +1495,11 @@ void ToMetal::TranslateAtomicMemOp(Instruction* psInst)
         }
         case OPCODE_IMM_ATOMIC_OR:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//IMM_ATOMIC_OR\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//IMM_ATOMIC_OR\n");
+            }
             func = "atomic_fetch_or_explicit";
             previousValue = &psInst->asOperands[0];
             dest = &psInst->asOperands[1];
@@ -1562,10 +1509,11 @@ void ToMetal::TranslateAtomicMemOp(Instruction* psInst)
         }
         case OPCODE_ATOMIC_OR:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//ATOMIC_OR\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//ATOMIC_OR\n");
+            }
             func = "atomic_fetch_or_explicit";
             dest = &psInst->asOperands[0];
             destAddr = &psInst->asOperands[1];
@@ -1574,10 +1522,11 @@ void ToMetal::TranslateAtomicMemOp(Instruction* psInst)
         }
         case OPCODE_IMM_ATOMIC_XOR:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//IMM_ATOMIC_XOR\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//IMM_ATOMIC_XOR\n");
+            }
             func = "atomic_fetch_xor_explicit";
             previousValue = &psInst->asOperands[0];
             dest = &psInst->asOperands[1];
@@ -1587,10 +1536,11 @@ void ToMetal::TranslateAtomicMemOp(Instruction* psInst)
         }
         case OPCODE_ATOMIC_XOR:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//ATOMIC_XOR\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//ATOMIC_XOR\n");
+            }
             func = "atomic_fetch_xor_explicit";
             dest = &psInst->asOperands[0];
             destAddr = &psInst->asOperands[1];
@@ -1600,10 +1550,11 @@ void ToMetal::TranslateAtomicMemOp(Instruction* psInst)
 
         case OPCODE_IMM_ATOMIC_EXCH:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//IMM_ATOMIC_EXCH\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//IMM_ATOMIC_EXCH\n");
+            }
             func = "atomic_exchange_explicit";
             previousValue = &psInst->asOperands[0];
             dest = &psInst->asOperands[1];
@@ -1613,42 +1564,41 @@ void ToMetal::TranslateAtomicMemOp(Instruction* psInst)
         }
         case OPCODE_IMM_ATOMIC_CMP_EXCH:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//IMM_ATOMIC_CMP_EXC\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//IMM_ATOMIC_CMP_EXC\n");
+            }
             func = "atomic_compare_exchange_weak_explicit";
             previousValue = &psInst->asOperands[0];
             dest = &psInst->asOperands[1];
             destAddr = &psInst->asOperands[2];
             compare = &psInst->asOperands[3];
             src = &psInst->asOperands[4];
-            shouldAddFailMemoryOrder = true;
-            shouldExtractCompare = true;
             break;
         }
         case OPCODE_ATOMIC_CMP_STORE:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//ATOMIC_CMP_STORE\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//ATOMIC_CMP_STORE\n");
+            }
             func = "atomic_compare_exchange_weak_explicit";
             previousValue = 0;
             dest = &psInst->asOperands[0];
             destAddr = &psInst->asOperands[1];
             compare = &psInst->asOperands[2];
             src = &psInst->asOperands[3];
-            shouldAddFailMemoryOrder = true;
-            shouldExtractCompare = true;
             break;
         }
         case OPCODE_IMM_ATOMIC_UMIN:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//IMM_ATOMIC_UMIN\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//IMM_ATOMIC_UMIN\n");
+            }
             func = "atomic_fetch_min_explicit";
             previousValue = &psInst->asOperands[0];
             dest = &psInst->asOperands[1];
@@ -1658,10 +1608,11 @@ void ToMetal::TranslateAtomicMemOp(Instruction* psInst)
         }
         case OPCODE_ATOMIC_UMIN:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//ATOMIC_UMIN\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//ATOMIC_UMIN\n");
+            }
             func = "atomic_fetch_min_explicit";
             dest = &psInst->asOperands[0];
             destAddr = &psInst->asOperands[1];
@@ -1670,10 +1621,11 @@ void ToMetal::TranslateAtomicMemOp(Instruction* psInst)
         }
         case OPCODE_IMM_ATOMIC_IMIN:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//IMM_ATOMIC_IMIN\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//IMM_ATOMIC_IMIN\n");
+            }
             func = "atomic_fetch_min_explicit";
             previousValue = &psInst->asOperands[0];
             dest = &psInst->asOperands[1];
@@ -1683,10 +1635,11 @@ void ToMetal::TranslateAtomicMemOp(Instruction* psInst)
         }
         case OPCODE_ATOMIC_IMIN:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//ATOMIC_IMIN\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//ATOMIC_IMIN\n");
+            }
             func = "atomic_fetch_min_explicit";
             dest = &psInst->asOperands[0];
             destAddr = &psInst->asOperands[1];
@@ -1695,10 +1648,11 @@ void ToMetal::TranslateAtomicMemOp(Instruction* psInst)
         }
         case OPCODE_IMM_ATOMIC_UMAX:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//IMM_ATOMIC_UMAX\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//IMM_ATOMIC_UMAX\n");
+            }
             func = "atomic_fetch_max_explicit";
             previousValue = &psInst->asOperands[0];
             dest = &psInst->asOperands[1];
@@ -1708,10 +1662,11 @@ void ToMetal::TranslateAtomicMemOp(Instruction* psInst)
         }
         case OPCODE_ATOMIC_UMAX:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//ATOMIC_UMAX\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//ATOMIC_UMAX\n");
+            }
             func = "atomic_fetch_max_explicit";
             dest = &psInst->asOperands[0];
             destAddr = &psInst->asOperands[1];
@@ -1720,10 +1675,11 @@ void ToMetal::TranslateAtomicMemOp(Instruction* psInst)
         }
         case OPCODE_IMM_ATOMIC_IMAX:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//IMM_ATOMIC_IMAX\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//IMM_ATOMIC_IMAX\n");
+            }
             func = "atomic_fetch_max_explicit";
             previousValue = &psInst->asOperands[0];
             dest = &psInst->asOperands[1];
@@ -1733,10 +1689,11 @@ void ToMetal::TranslateAtomicMemOp(Instruction* psInst)
         }
         case OPCODE_ATOMIC_IMAX:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//ATOMIC_IMAX\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//ATOMIC_IMAX\n");
+            }
             func = "atomic_fetch_max_explicit";
             dest = &psInst->asOperands[0];
             destAddr = &psInst->asOperands[1];
@@ -1797,7 +1754,7 @@ void ToMetal::TranslateAtomicMemOp(Instruction* psInst)
     else
         ui32DataTypeFlag = TO_FLAG_INTEGER | TO_AUTO_BITCAST_TO_INT;
 
-    if (shouldExtractCompare)
+    if (compare)
     {
         bcatcstr(glsl, "{\n");
         ++psContext->indent;
@@ -1808,7 +1765,7 @@ void ToMetal::TranslateAtomicMemOp(Instruction* psInst)
         psContext->AddIndentation();
     }
     else if (previousValue)
-        AddAssignToDest(previousValue, isUint ? SVT_UINT : SVT_INT, 1, &numParenthesis);
+        AddAssignToDest(previousValue, isUint ? SVT_UINT : SVT_INT, 1, psInst->ui32PreciseMask, numParenthesis);
 
     bcatcstr(glsl, func);
     bcatcstr(glsl, "(");
@@ -1843,21 +1800,11 @@ void ToMetal::TranslateAtomicMemOp(Instruction* psInst)
     bcatcstr(glsl, "]), ");
 
     if (compare)
-    {
-        if (shouldExtractCompare)
-        {
-            bcatcstr(glsl, "&compare_value, ");
-        }
-        else
-        {
-            glsl << TranslateOperand(compare, ui32DataTypeFlag);
-            bcatcstr(glsl, ", ");
-        }
-    }
+        bcatcstr(glsl, "&compare_value, ");
 
     glsl << TranslateOperand(src, ui32DataTypeFlag);
     bcatcstr(glsl, ", memory_order::memory_order_relaxed");
-    if (shouldAddFailMemoryOrder)
+    if (compare)
         bcatcstr(glsl, ", memory_order::memory_order_relaxed");
     bcatcstr(glsl, ")");
     if (previousValue)
@@ -1867,12 +1814,12 @@ void ToMetal::TranslateAtomicMemOp(Instruction* psInst)
     else
         bcatcstr(glsl, ";\n");
 
-    if (shouldExtractCompare)
+    if (compare)
     {
         if (previousValue)
         {
             psContext->AddIndentation();
-            AddAssignToDest(previousValue, SVT_UINT, 1, &numParenthesis);
+            AddAssignToDest(previousValue, SVT_UINT, 1, psInst->ui32PreciseMask, numParenthesis);
             bcatcstr(glsl, "compare_value");
             AddAssignPrologue(numParenthesis);
         }
@@ -1960,17 +1907,18 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
     bstring glsl = *psContext->currentGLSLString;
     int numParenthesis = 0;
 
-#ifdef _DEBUG
-    // Uncomment to print instruction IDs
-    //psContext->AddIndentation();
-    //bformata(glsl, "//Instruction %d\n", psInst->id);
-#if 0
-    if (psInst->id == 73)
+    if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
     {
-        ASSERT(1); //Set breakpoint here to debug an instruction from its ID.
+        // Uncomment to print instruction IDs
+        //psContext->AddIndentation();
+        //bformata(glsl, "//Instruction %d\n", psInst->id);
+        #if 0
+        if (psInst->id == 73)
+        {
+            ASSERT(1); //Set breakpoint here to debug an instruction from its ID.
+        }
+        #endif
     }
-#endif
-#endif
 
     switch (psInst->eOpcode)
     {
@@ -1980,13 +1928,14 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
             uint32_t dstCount = psInst->asOperands[0].GetNumSwizzleElements();
             uint32_t srcCount = psInst->asOperands[1].GetNumSwizzleElements();
             SHADER_VARIABLE_TYPE castType = psInst->eOpcode == OPCODE_FTOU ? SVT_UINT : SVT_INT;
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            if (psInst->eOpcode == OPCODE_FTOU)
-                bcatcstr(glsl, "//FTOU\n");
-            else
-                bcatcstr(glsl, "//FTOI\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                if (psInst->eOpcode == OPCODE_FTOU)
+                    bcatcstr(glsl, "//FTOU\n");
+                else
+                    bcatcstr(glsl, "//FTOI\n");
+            }
             switch (psInst->asOperands[0].eMinPrecision)
             {
                 case OPERAND_MIN_PRECISION_DEFAULT:
@@ -2004,7 +1953,7 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
             }
             psContext->AddIndentation();
 
-            AddAssignToDest(&psInst->asOperands[0], castType, srcCount, &numParenthesis);
+            AddAssignToDest(&psInst->asOperands[0], castType, srcCount, psInst->ui32PreciseMask, numParenthesis);
             bcatcstr(glsl, GetConstructorForTypeMetal(castType, dstCount));
             bcatcstr(glsl, "("); // 1
             glsl << TranslateOperand(&psInst->asOperands[1], TO_AUTO_BITCAST_TO_FLOAT, psInst->asOperands[0].GetAccessMask());
@@ -2015,12 +1964,44 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
 
         case OPCODE_MOV:
         {
-#ifdef _DEBUG
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//MOV\n");
+            }
             psContext->AddIndentation();
-            bcatcstr(glsl, "//MOV\n");
-#endif
-            psContext->AddIndentation();
-            AddMOVBinaryOp(&psInst->asOperands[0], &psInst->asOperands[1]);
+
+            // UNITY SPECIFIC: you can check case 1158280
+            // This looks like a hack because it is! There is a bug that is quite hard to reproduce.
+            // When doing data analysis we assume that immediates are ints and hope it will be promoted later
+            //   which is kinda fine unless there is an unfortunate combination happening:
+            // We operate on 4-component registers - we need different components to be treated as float/int
+            //   but we should not use float operations (as this will mark register as float)
+            //   instead "float" components should be used for MOV and friends to other registers
+            //   and they, in turn, should be used for float ops
+            // In pseudocode it can look like this:
+            //   var2.xy = var1.xy; <float magic with var2> var1.xy = var2.xy;  // not marked as float explicitly
+            //   bool foo = var1.z | <...>                                      // marked as int
+            // Now we have immediate that will be treated as int but NOT promoted because we think we have all ints
+            //   var1.w = 1                                                     // var1 is marked int
+            // What is important is that this temporary is marked as int by us but DX compiler treats it
+            //   as "normal" float (and rightfully so) [or rather - we speak about cases where it does treat it as float]
+            // It is also important that we speak about temps (otherwise we have explicit data type to use, so promotion works)
+            //
+            // At this point we have mov immediate to int temp (which should really be float temp)
+            {
+                Operand *pDst = &psInst->asOperands[0], *pSrc = &psInst->asOperands[1];
+                if (pDst->GetDataType(psContext) == SVT_INT                                 // dst marked as int
+                    && pDst->eType == OPERAND_TYPE_TEMP                                     // dst is temp
+                    && pSrc->eType == OPERAND_TYPE_IMMEDIATE32                              // src is immediate
+                    && psContext->psShader->psIntTempSizes[pDst->ui32RegisterNumber] == 0   // no temp register allocated
+                )
+                {
+                    pDst->aeDataType[0] = pDst->aeDataType[1] = pDst->aeDataType[2] = pDst->aeDataType[3] = SVT_FLOAT;
+                }
+            }
+
+            AddMOVBinaryOp(&psInst->asOperands[0], &psInst->asOperands[1], psInst->ui32PreciseMask);
             break;
         }
         case OPCODE_ITOF://signed to float
@@ -2030,17 +2011,14 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
             uint32_t dstCount = psInst->asOperands[0].GetNumSwizzleElements();
             uint32_t srcCount = psInst->asOperands[1].GetNumSwizzleElements();
 
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            if (psInst->eOpcode == OPCODE_ITOF)
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
             {
-                bcatcstr(glsl, "//ITOF\n");
+                psContext->AddIndentation();
+                if (psInst->eOpcode == OPCODE_ITOF)
+                    bcatcstr(glsl, "//ITOF\n");
+                else
+                    bcatcstr(glsl, "//UTOF\n");
             }
-            else
-            {
-                bcatcstr(glsl, "//UTOF\n");
-            }
-#endif
 
             switch (psInst->asOperands[0].eMinPrecision)
             {
@@ -2057,7 +2035,7 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
             }
 
             psContext->AddIndentation();
-            AddAssignToDest(&psInst->asOperands[0], castType, srcCount, &numParenthesis);
+            AddAssignToDest(&psInst->asOperands[0], castType, srcCount, psInst->ui32PreciseMask, numParenthesis);
             bcatcstr(glsl, GetConstructorForTypeMetal(castType, dstCount));
             bcatcstr(glsl, "("); // 1
             glsl << TranslateOperand(&psInst->asOperands[1], psInst->eOpcode == OPCODE_UTOF ? TO_AUTO_BITCAST_TO_UINT : TO_AUTO_BITCAST_TO_INT, psInst->asOperands[0].GetAccessMask());
@@ -2067,20 +2045,22 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         }
         case OPCODE_MAD:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//MAD\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//MAD\n");
+            }
             CallHelper3("fma", psInst, 0, 1, 2, 3, 1);
             break;
         }
         case OPCODE_IMAD:
         {
             uint32_t ui32Flags = TO_FLAG_INTEGER;
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//IMAD\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//IMAD\n");
+            }
 
             if (psInst->asOperands[0].GetDataType(psContext) == SVT_UINT)
             {
@@ -2093,29 +2073,32 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         case OPCODE_DFMA:
         {
             uint32_t ui32Flags = TO_FLAG_DOUBLE;
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//DFMA\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//DFMA\n");
+            }
             CallHelper3("fma", psInst, 0, 1, 2, 3, 1, ui32Flags);
             break;
         }
         case OPCODE_DADD:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//DADD\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//DADD\n");
+            }
             CallBinaryOp("+", psInst, 0, 1, 2, SVT_DOUBLE);
             break;
         }
         case OPCODE_IADD:
         {
             SHADER_VARIABLE_TYPE eType = SVT_INT;
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//IADD\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//IADD\n");
+            }
             //Is this a signed or unsigned add?
             if (psInst->asOperands[0].GetDataType(psContext) == SVT_UINT)
             {
@@ -2126,27 +2109,29 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         }
         case OPCODE_ADD:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//ADD\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//ADD\n");
+            }
             CallBinaryOp("+", psInst, 0, 1, 2, SVT_FLOAT);
             break;
         }
         case OPCODE_OR:
         {
             /*Todo: vector version */
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//OR\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//OR\n");
+            }
             if (psInst->asOperands[0].GetDataType(psContext) == SVT_BOOL)
             {
                 uint32_t destMask = psInst->asOperands[0].GetAccessMask();
 
                 int needsParenthesis = 0;
                 psContext->AddIndentation();
-                AddAssignToDest(&psInst->asOperands[0], SVT_BOOL, psInst->asOperands[0].GetNumSwizzleElements(), &needsParenthesis);
+                AddAssignToDest(&psInst->asOperands[0], SVT_BOOL, psInst->asOperands[0].GetNumSwizzleElements(), psInst->ui32PreciseMask, needsParenthesis);
                 glsl << TranslateOperand(&psInst->asOperands[1], TO_FLAG_BOOL, destMask);
                 bcatcstr(glsl, " || ");
                 glsl << TranslateOperand(&psInst->asOperands[2], TO_FLAG_BOOL, destMask);
@@ -2160,19 +2145,20 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         {
             SHADER_VARIABLE_TYPE eA = psInst->asOperands[1].GetDataType(psContext);
             SHADER_VARIABLE_TYPE eB = psInst->asOperands[2].GetDataType(psContext);
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//AND\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//AND\n");
+            }
             uint32_t destMask = psInst->asOperands[0].GetAccessMask();
-            uint32_t dstSwizCount = psInst->asOperands[0].GetNumSwizzleElements();
+            const uint32_t dstSwizCount = psInst->asOperands[0].GetNumSwizzleElements();
             SHADER_VARIABLE_TYPE eDataType = psInst->asOperands[0].GetDataType(psContext);
             uint32_t ui32Flags = SVTTypeToFlag(eDataType);
             if (psInst->asOperands[0].GetDataType(psContext) == SVT_BOOL)
             {
                 int needsParenthesis = 0;
                 psContext->AddIndentation();
-                AddAssignToDest(&psInst->asOperands[0], SVT_BOOL, psInst->asOperands[0].GetNumSwizzleElements(), &needsParenthesis);
+                AddAssignToDest(&psInst->asOperands[0], SVT_BOOL, psInst->asOperands[0].GetNumSwizzleElements(), psInst->ui32PreciseMask, needsParenthesis);
                 glsl << TranslateOperand(&psInst->asOperands[1], TO_FLAG_BOOL, destMask);
                 bcatcstr(glsl, " && ");
                 glsl << TranslateOperand(&psInst->asOperands[2], TO_FLAG_BOOL, destMask);
@@ -2188,7 +2174,7 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
 
                 if (dstSwizCount == 1)
                 {
-                    AddAssignToDest(&psInst->asOperands[0], eDataType, dstSwizCount, &needsParenthesis);
+                    AddAssignToDest(&psInst->asOperands[0], eDataType, dstSwizCount, psInst->ui32PreciseMask, needsParenthesis);
                     glsl << TranslateOperand(&psInst->asOperands[boolOp], TO_FLAG_BOOL, destMask);
                     bcatcstr(glsl, " ? ");
                     glsl << TranslateOperand(&psInst->asOperands[otherOp], ui32Flags, destMask);
@@ -2196,28 +2182,23 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
 
                     bcatcstr(glsl, GetConstructorForTypeMetal(eDataType, dstSwizCount));
                     bcatcstr(glsl, "(");
-                    for (i = 0; i < dstSwizCount; i++)
+                    switch (eDataType)
                     {
-                        if (i > 0)
-                            bcatcstr(glsl, ", ");
-                        switch (eDataType)
-                        {
-                            case SVT_FLOAT:
-                            case SVT_FLOAT10:
-                            case SVT_FLOAT16:
-                            case SVT_DOUBLE:
-                                bcatcstr(glsl, "0.0");
-                                break;
-                            default:
-                                bcatcstr(glsl, "0");
-                        }
+                        case SVT_FLOAT:
+                        case SVT_FLOAT10:
+                        case SVT_FLOAT16:
+                        case SVT_DOUBLE:
+                            bcatcstr(glsl, "0.0");
+                            break;
+                        default:
+                            bcatcstr(glsl, "0");
                     }
                     bcatcstr(glsl, ")");
                 }
                 else if (eDataType == SVT_FLOAT)
                 {
                     // We can use select()
-                    AddAssignToDest(&psInst->asOperands[0], eDataType, dstSwizCount, &needsParenthesis);
+                    AddAssignToDest(&psInst->asOperands[0], eDataType, dstSwizCount, psInst->ui32PreciseMask, needsParenthesis);
                     bcatcstr(glsl, "select(");
                     bcatcstr(glsl, GetConstructorForTypeMetal(eDataType, dstSwizCount));
                     bcatcstr(glsl, "(");
@@ -2225,17 +2206,7 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
                     {
                         if (i > 0)
                             bcatcstr(glsl, ", ");
-                        switch (eDataType)
-                        {
-                            case SVT_FLOAT:
-                            case SVT_FLOAT10:
-                            case SVT_FLOAT16:
-                            case SVT_DOUBLE:
-                                bcatcstr(glsl, "0.0");
-                                break;
-                            default:
-                                bcatcstr(glsl, "0");
-                        }
+                        bcatcstr(glsl, "0.0");
                     }
                     bcatcstr(glsl, "), ");
                     glsl << TranslateOperand(&psInst->asOperands[otherOp], ui32Flags, destMask);
@@ -2248,7 +2219,7 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
                 }
                 else
                 {
-                    AddAssignToDest(&psInst->asOperands[0], SVT_UINT, dstSwizCount, &needsParenthesis);
+                    AddAssignToDest(&psInst->asOperands[0], SVT_UINT, dstSwizCount, psInst->ui32PreciseMask, needsParenthesis);
                     bcatcstr(glsl, "(");
                     bcatcstr(glsl, GetConstructorForTypeMetal(SVT_UINT, dstSwizCount));
                     bcatcstr(glsl, "(");
@@ -2273,29 +2244,32 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
                 dest = vec4(greaterThanEqual(vec4(srcA), vec4(srcB));
                 Caveat: The result is a boolean but HLSL asm returns 0xFFFFFFFF/0x0 instead.
                 */
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//GE\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//GE\n");
+            }
             AddComparison(psInst, CMP_GE, TO_FLAG_NONE);
             break;
         }
         case OPCODE_MUL:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//MUL\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//MUL\n");
+            }
             CallBinaryOp("*", psInst, 0, 1, 2, SVT_FLOAT);
             break;
         }
         case OPCODE_IMUL:
         {
             SHADER_VARIABLE_TYPE eType = SVT_INT;
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//IMUL\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//IMUL\n");
+            }
             if (psInst->asOperands[1].GetDataType(psContext) == SVT_UINT)
             {
                 eType = SVT_UINT;
@@ -2308,10 +2282,11 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         }
         case OPCODE_UDIV:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//UDIV\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//UDIV\n");
+            }
             //destQuotient, destRemainder, src0, src1
 
             // There are cases where destQuotient is the same variable as src0 or src1. If that happens,
@@ -2331,19 +2306,21 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         }
         case OPCODE_DIV:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//DIV\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//DIV\n");
+            }
             CallBinaryOp("/", psInst, 0, 1, 2, SVT_FLOAT);
             break;
         }
         case OPCODE_SINCOS:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//SINCOS\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//SINCOS\n");
+            }
             // Need careful ordering if src == dest[0], as then the cos() will be reading from wrong value
             if (psInst->asOperands[0].eType == psInst->asOperands[2].eType &&
                 psInst->asOperands[0].ui32RegisterNumber == psInst->asOperands[2].ui32RegisterNumber)
@@ -2379,10 +2356,11 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         case OPCODE_DP2:
         {
             int numParenthesis = 0;
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//DP2\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//DP2\n");
+            }
             psContext->AddIndentation();
             SHADER_VARIABLE_TYPE dstType = psInst->asOperands[0].GetDataType(psContext);
             uint32_t typeFlags = TO_AUTO_BITCAST_TO_FLOAT | TO_AUTO_EXPAND_TO_VEC2;
@@ -2393,7 +2371,7 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
             if (dstType != SVT_FLOAT16)
                 dstType = SVT_FLOAT;
 
-            AddAssignToDest(&psInst->asOperands[0], dstType, 1, &numParenthesis);
+            AddAssignToDest(&psInst->asOperands[0], dstType, 1, psInst->ui32PreciseMask, numParenthesis);
             bcatcstr(glsl, "dot(");
             glsl << TranslateOperand(&psInst->asOperands[1], typeFlags, 3 /* .xy */);
             bcatcstr(glsl, ", ");
@@ -2405,10 +2383,11 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         case OPCODE_DP3:
         {
             int numParenthesis = 0;
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//DP3\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//DP3\n");
+            }
             psContext->AddIndentation();
             SHADER_VARIABLE_TYPE dstType = psInst->asOperands[0].GetDataType(psContext);
             uint32_t typeFlags = TO_AUTO_BITCAST_TO_FLOAT | TO_AUTO_EXPAND_TO_VEC3;
@@ -2419,7 +2398,7 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
             if (dstType != SVT_FLOAT16)
                 dstType = SVT_FLOAT;
 
-            AddAssignToDest(&psInst->asOperands[0], dstType, 1, &numParenthesis);
+            AddAssignToDest(&psInst->asOperands[0], dstType, 1, psInst->ui32PreciseMask, numParenthesis);
             bcatcstr(glsl, "dot(");
             glsl << TranslateOperand(&psInst->asOperands[1], typeFlags, 7 /* .xyz */);
             bcatcstr(glsl, ", ");
@@ -2430,353 +2409,390 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         }
         case OPCODE_DP4:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//DP4\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//DP4\n");
+            }
             CallHelper2("dot", psInst, 0, 1, 2, 0);
             break;
         }
         case OPCODE_INE:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//INE\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//INE\n");
+            }
             AddComparison(psInst, CMP_NE, TO_FLAG_INTEGER);
             break;
         }
         case OPCODE_NE:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//NE\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//NE\n");
+            }
             AddComparison(psInst, CMP_NE, TO_FLAG_NONE);
             break;
         }
         case OPCODE_IGE:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//IGE\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//IGE\n");
+            }
             AddComparison(psInst, CMP_GE, TO_FLAG_INTEGER);
             break;
         }
         case OPCODE_ILT:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//ILT\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//ILT\n");
+            }
             AddComparison(psInst, CMP_LT, TO_FLAG_INTEGER);
             break;
         }
         case OPCODE_LT:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//LT\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//LT\n");
+            }
             AddComparison(psInst, CMP_LT, TO_FLAG_NONE);
             break;
         }
         case OPCODE_IEQ:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//IEQ\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//IEQ\n");
+            }
             AddComparison(psInst, CMP_EQ, TO_FLAG_INTEGER);
             break;
         }
         case OPCODE_ULT:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//ULT\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//ULT\n");
+            }
             AddComparison(psInst, CMP_LT, TO_FLAG_UNSIGNED_INTEGER);
             break;
         }
         case OPCODE_UGE:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//UGE\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//UGE\n");
+            }
             AddComparison(psInst, CMP_GE, TO_FLAG_UNSIGNED_INTEGER);
             break;
         }
         case OPCODE_MOVC:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//MOVC\n");
-#endif
-            AddMOVCBinaryOp(&psInst->asOperands[0], &psInst->asOperands[1], &psInst->asOperands[2], &psInst->asOperands[3]);
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//MOVC\n");
+            }
+            AddMOVCBinaryOp(&psInst->asOperands[0], &psInst->asOperands[1], &psInst->asOperands[2], &psInst->asOperands[3], psInst->ui32PreciseMask);
             break;
         }
         case OPCODE_SWAPC:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//SWAPC\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//SWAPC\n");
+            }
             // TODO needs temps!!
             ASSERT(0);
-            AddMOVCBinaryOp(&psInst->asOperands[0], &psInst->asOperands[2], &psInst->asOperands[4], &psInst->asOperands[3]);
-            AddMOVCBinaryOp(&psInst->asOperands[1], &psInst->asOperands[2], &psInst->asOperands[3], &psInst->asOperands[4]);
+            AddMOVCBinaryOp(&psInst->asOperands[0], &psInst->asOperands[2], &psInst->asOperands[4], &psInst->asOperands[3], psInst->ui32PreciseMask);
+            AddMOVCBinaryOp(&psInst->asOperands[1], &psInst->asOperands[2], &psInst->asOperands[3], &psInst->asOperands[4], psInst->ui32PreciseMask);
             break;
         }
 
         case OPCODE_LOG:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//LOG\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//LOG\n");
+            }
             CallHelper1("log2", psInst, 0, 1, 1);
             break;
         }
         case OPCODE_RSQ:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//RSQ\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//RSQ\n");
+            }
             CallHelper1("rsqrt", psInst, 0, 1, 1);
             break;
         }
         case OPCODE_EXP:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//EXP\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//EXP\n");
+            }
             CallHelper1("exp2", psInst, 0, 1, 1);
             break;
         }
         case OPCODE_SQRT:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//SQRT\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//SQRT\n");
+            }
             CallHelper1("sqrt", psInst, 0, 1, 1);
             break;
         }
         case OPCODE_ROUND_PI:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//ROUND_PI\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//ROUND_PI\n");
+            }
             CallHelper1("ceil", psInst, 0, 1, 1);
             break;
         }
         case OPCODE_ROUND_NI:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//ROUND_NI\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//ROUND_NI\n");
+            }
             CallHelper1("floor", psInst, 0, 1, 1);
             break;
         }
         case OPCODE_ROUND_Z:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//ROUND_Z\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//ROUND_Z\n");
+            }
             CallHelper1("trunc", psInst, 0, 1, 1);
             break;
         }
         case OPCODE_ROUND_NE:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//ROUND_NE\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//ROUND_NE\n");
+            }
             CallHelper1("rint", psInst, 0, 1, 1);
             break;
         }
         case OPCODE_FRC:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//FRC\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//FRC\n");
+            }
             CallHelper1("fract", psInst, 0, 1, 1);
             break;
         }
         case OPCODE_IMAX:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//IMAX\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//IMAX\n");
+            }
             CallHelper2Int("max", psInst, 0, 1, 2, 1);
             break;
         }
         case OPCODE_UMAX:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//UMAX\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//UMAX\n");
+            }
             CallHelper2UInt("max", psInst, 0, 1, 2, 1);
             break;
         }
         case OPCODE_MAX:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//MAX\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//MAX\n");
+            }
             CallHelper2("max", psInst, 0, 1, 2, 1);
             break;
         }
         case OPCODE_IMIN:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//IMIN\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//IMIN\n");
+            }
             CallHelper2Int("min", psInst, 0, 1, 2, 1);
             break;
         }
         case OPCODE_UMIN:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//UMIN\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//UMIN\n");
+            }
             CallHelper2UInt("min", psInst, 0, 1, 2, 1);
             break;
         }
         case OPCODE_MIN:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//MIN\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//MIN\n");
+            }
             CallHelper2("min", psInst, 0, 1, 2, 1);
             break;
         }
         case OPCODE_GATHER4:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//GATHER4\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//GATHER4\n");
+            }
             TranslateTextureSample(psInst, TEXSMP_FLAG_GATHER);
             break;
         }
         case OPCODE_GATHER4_PO_C:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//GATHER4_PO_C\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//GATHER4_PO_C\n");
+            }
             TranslateTextureSample(psInst, TEXSMP_FLAG_GATHER | TEXSMP_FLAG_PARAMOFFSET | TEXSMP_FLAG_DEPTHCOMPARE);
             break;
         }
         case OPCODE_GATHER4_PO:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//GATHER4_PO\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//GATHER4_PO\n");
+            }
             TranslateTextureSample(psInst, TEXSMP_FLAG_GATHER | TEXSMP_FLAG_PARAMOFFSET);
             break;
         }
         case OPCODE_GATHER4_C:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//GATHER4_C\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//GATHER4_C\n");
+            }
             TranslateTextureSample(psInst, TEXSMP_FLAG_GATHER | TEXSMP_FLAG_DEPTHCOMPARE);
             break;
         }
         case OPCODE_SAMPLE:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//SAMPLE\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//SAMPLE\n");
+            }
             TranslateTextureSample(psInst, TEXSMP_FLAG_NONE);
             break;
         }
         case OPCODE_SAMPLE_L:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//SAMPLE_L\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//SAMPLE_L\n");
+            }
             TranslateTextureSample(psInst, TEXSMP_FLAG_LOD);
             break;
         }
         case OPCODE_SAMPLE_C:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//SAMPLE_C\n");
-#endif
-
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//SAMPLE_C\n");
+            }
             TranslateTextureSample(psInst, TEXSMP_FLAG_DEPTHCOMPARE);
             break;
         }
         case OPCODE_SAMPLE_C_LZ:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//SAMPLE_C_LZ\n");
-#endif
-
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//SAMPLE_C_LZ\n");
+            }
             TranslateTextureSample(psInst, TEXSMP_FLAG_DEPTHCOMPARE | TEXSMP_FLAG_FIRSTLOD);
             break;
         }
         case OPCODE_SAMPLE_D:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//SAMPLE_D\n");
-#endif
-
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//SAMPLE_D\n");
+            }
             TranslateTextureSample(psInst, TEXSMP_FLAG_GRAD);
             break;
         }
         case OPCODE_SAMPLE_B:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//SAMPLE_B\n");
-#endif
-
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//SAMPLE_B\n");
+            }
             TranslateTextureSample(psInst, TEXSMP_FLAG_BIAS);
             break;
         }
         case OPCODE_RET:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//RET\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//RET\n");
+            }
             if (psContext->psShader->asPhases[psContext->currentPhase].hasPostShaderCode)
             {
-#ifdef _DEBUG
-                psContext->AddIndentation();
-                bcatcstr(glsl, "//--- Post shader code ---\n");
-#endif
+                if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+                {
+                    psContext->AddIndentation();
+                    bcatcstr(glsl, "//--- Post shader code ---\n");
+                }
+
                 bconcat(glsl, psContext->psShader->asPhases[psContext->currentPhase].postShaderCode);
-#ifdef _DEBUG
-                psContext->AddIndentation();
-                bcatcstr(glsl, "//--- End post shader code ---\n");
-#endif
+
+                if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+                {
+                    psContext->AddIndentation();
+                    bcatcstr(glsl, "//--- End post shader code ---\n");
+                }
             }
             psContext->AddIndentation();
             if (psContext->psShader->eShaderType == COMPUTE_SHADER || (psContext->psShader->eShaderType == PIXEL_SHADER && m_StructDefinitions[GetOutputStructName()].m_Members.size() == 0))
@@ -2796,23 +2812,41 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         }
         case OPCODE_COUNTBITS:
         {
-#ifdef _DEBUG
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//COUNTBITS\n");
+            }
             psContext->AddIndentation();
-            bcatcstr(glsl, "//COUNTBITS\n");
-#endif
-            psContext->AddIndentation();
-            glsl << TranslateOperand(&psInst->asOperands[0], TO_FLAG_INTEGER | TO_FLAG_DESTINATION);
-            bcatcstr(glsl, " = popCount(");
-            glsl << TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER);
+
+            // in metal popcount decl is T popcount(T), so it is important that input/output types agree
+            // enter assembly: when writing swizzle encoding we use 0 to say "source from x"
+            // now, say, we generate code o.xy = bitcount(i.xy)
+            //   output gets component mask 1,1,0,0 (note that we use bit 1<<i to indicate if we should use component)
+            //   input gets swizzle mask (2 bits sectios) 0,2,0,0; which is interpreted as xyxx
+            // from the assembly standpoint this is fine, but, as indicated above, in metal code we should be more careful
+            // NOTE: this is pretty general issue for functions like that - i am not sure if we can/should fix it generally
+            // anyway here we are. It *seems* that doing popcount(i.<..>).<..> will still collapse everything into
+            //   popcount(i.<..>) [well, tweaking swizzle, sure]
+            // what does that mean is that we can safely take output component count to determine "proper" type
+            // note that hlsl compiler already checked that things can work out, so it should be fine doing this magic
+
+            const Operand* dst = &psInst->asOperands[0];
+            const int dstCompCount = dst->eSelMode == OPERAND_4_COMPONENT_MASK_MODE ? dst->ui32CompMask : OPERAND_4_COMPONENT_MASK_ALL;
+
+            glsl << TranslateOperand(dst, TO_FLAG_INTEGER | TO_FLAG_DESTINATION);
+            bcatcstr(glsl, " = popcount(");
+            glsl << TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER, dstCompCount);
             bcatcstr(glsl, ");\n");
             break;
         }
         case OPCODE_FIRSTBIT_HI:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//FIRSTBIT_HI\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//FIRSTBIT_HI\n");
+            }
             DeclareExtraFunction("firstBit_hi", "template <typename UVecType> UVecType firstBit_hi(const UVecType input) { UVecType res = clz(input); return res; };");
             // TODO implement the 0-case (must return 0xffffffff)
             psContext->AddIndentation();
@@ -2824,10 +2858,11 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         }
         case OPCODE_FIRSTBIT_LO:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//FIRSTBIT_LO\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//FIRSTBIT_LO\n");
+            }
             // TODO implement the 0-case (must return 0xffffffff)
             DeclareExtraFunction("firstBit_lo", "template <typename UVecType> UVecType firstBit_lo(const UVecType input) { UVecType res = ctz(input); return res; };");
             psContext->AddIndentation();
@@ -2839,10 +2874,11 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         }
         case OPCODE_FIRSTBIT_SHI: //signed high
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//FIRSTBIT_SHI\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//FIRSTBIT_SHI\n");
+            }
             // TODO Not at all correct for negative values yet.
             DeclareExtraFunction("firstBit_shi", "template <typename IVecType> IVecType firstBit_shi(const IVecType input) { IVecType res = clz(input); return res; };");
             psContext->AddIndentation();
@@ -2854,10 +2890,11 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         }
         case OPCODE_BFREV:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//BFREV\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//BFREV\n");
+            }
             DeclareExtraFunction("bitReverse", "template <typename UVecType> UVecType bitReverse(const UVecType input)\n\
 \t\t{ UVecType x = input;\n\
 \t\t\tx = (((x & 0xaaaaaaaa) >> 1) | ((x & 0x55555555) << 1));\n\
@@ -2875,10 +2912,11 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         }
         case OPCODE_BFI:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//BFI\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//BFI\n");
+            }
             DeclareExtraFunction("BFI", "\
 \t\ttemplate <typename UVecType> UVecType bitFieldInsert(const UVecType width, const UVecType offset, const UVecType src2, const UVecType src3)\n\
 \t\t{\n\
@@ -2888,7 +2926,7 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
             psContext->AddIndentation();
 
             uint32_t destMask = psInst->asOperands[0].GetAccessMask();
-            AddAssignToDest(&psInst->asOperands[0], SVT_UINT, psInst->asOperands[0].GetNumSwizzleElements(), &numParenthesis);
+            AddAssignToDest(&psInst->asOperands[0], SVT_UINT, psInst->asOperands[0].GetNumSwizzleElements(), psInst->ui32PreciseMask, numParenthesis);
             bcatcstr(glsl, "bitFieldInsert(");
             glsl << TranslateOperand(&psInst->asOperands[1], TO_FLAG_UNSIGNED_INTEGER, destMask);
             bcatcstr(glsl, ", ");
@@ -2918,10 +2956,11 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         }
         case OPCODE_LOOP:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//LOOP\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//LOOP\n");
+            }
             psContext->AddIndentation();
 
             bcatcstr(glsl, "while(true){\n");
@@ -2931,30 +2970,33 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         case OPCODE_ENDLOOP:
         {
             --psContext->indent;
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//ENDLOOP\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//ENDLOOP\n");
+            }
             psContext->AddIndentation();
             bcatcstr(glsl, "}\n");
             break;
         }
         case OPCODE_BREAK:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//BREAK\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//BREAK\n");
+            }
             psContext->AddIndentation();
             bcatcstr(glsl, "break;\n");
             break;
         }
         case OPCODE_BREAKC:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//BREAKC\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//BREAKC\n");
+            }
             psContext->AddIndentation();
 
             TranslateConditional(psInst, glsl);
@@ -2962,10 +3004,11 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         }
         case OPCODE_CONTINUEC:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//CONTINUEC\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//CONTINUEC\n");
+            }
             psContext->AddIndentation();
 
             TranslateConditional(psInst, glsl);
@@ -2973,10 +3016,11 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         }
         case OPCODE_IF:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//IF\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//IF\n");
+            }
             psContext->AddIndentation();
 
             TranslateConditional(psInst, glsl);
@@ -2985,10 +3029,11 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         }
         case OPCODE_RETC:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//RETC\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//RETC\n");
+            }
             psContext->AddIndentation();
 
             TranslateConditional(psInst, glsl);
@@ -2997,10 +3042,11 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         case OPCODE_ELSE:
         {
             --psContext->indent;
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//ELSE\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//ELSE\n");
+            }
             psContext->AddIndentation();
             bcatcstr(glsl, "} else {\n");
             psContext->indent++;
@@ -3010,10 +3056,11 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         case OPCODE_ENDIF:
         {
             --psContext->indent;
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//ENDIF\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//ENDIF\n");
+            }
             psContext->AddIndentation();
             bcatcstr(glsl, "}\n");
             break;
@@ -3040,10 +3087,11 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         {
             const uint32_t ui32SyncFlags = psInst->ui32SyncFlags;
 
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//SYNC\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//SYNC\n");
+            }
             const bool sync_threadgroup = (ui32SyncFlags & SYNC_THREAD_GROUP_SHARED_MEMORY) != 0;
             const bool sync_device = (ui32SyncFlags & (SYNC_UNORDERED_ACCESS_VIEW_MEMORY_GROUP | SYNC_UNORDERED_ACCESS_VIEW_MEMORY_GLOBAL)) != 0;
 
@@ -3070,10 +3118,11 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         }
         case OPCODE_SWITCH:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//SWITCH\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//SWITCH\n");
+            }
             psContext->AddIndentation();
             bcatcstr(glsl, "switch(int(");
             glsl << TranslateOperand(&psInst->asOperands[0], TO_FLAG_INTEGER);
@@ -3085,10 +3134,11 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         case OPCODE_CASE:
         {
             --psContext->indent;
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//case\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//case\n");
+            }
             psContext->AddIndentation();
 
             bcatcstr(glsl, "case ");
@@ -3100,19 +3150,21 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         }
         case OPCODE_EQ:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//EQ\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//EQ\n");
+            }
             AddComparison(psInst, CMP_EQ, TO_FLAG_NONE);
             break;
         }
         case OPCODE_USHR:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//USHR\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//USHR\n");
+            }
             CallBinaryOp(">>", psInst, 0, 1, 2, SVT_UINT);
             break;
         }
@@ -3120,10 +3172,11 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         {
             SHADER_VARIABLE_TYPE eType = SVT_INT;
 
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//ISHL\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//ISHL\n");
+            }
 
             if (psInst->asOperands[0].GetDataType(psContext) == SVT_UINT)
             {
@@ -3136,10 +3189,11 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         case OPCODE_ISHR:
         {
             SHADER_VARIABLE_TYPE eType = SVT_INT;
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//ISHR\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//ISHR\n");
+            }
 
             if (psInst->asOperands[0].GetDataType(psContext) == SVT_UINT)
             {
@@ -3153,13 +3207,14 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         case OPCODE_LD_MS:
         {
             const ResourceBinding* psBinding = 0;
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            if (psInst->eOpcode == OPCODE_LD)
-                bcatcstr(glsl, "//LD\n");
-            else
-                bcatcstr(glsl, "//LD_MS\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                if (psInst->eOpcode == OPCODE_LD)
+                    bcatcstr(glsl, "//LD\n");
+                else
+                    bcatcstr(glsl, "//LD_MS\n");
+            }
 
             psContext->psShader->sInfo.GetResourceFromBindingPoint(RGROUP_TEXTURE, psInst->asOperands[2].ui32RegisterNumber, &psBinding);
 
@@ -3185,10 +3240,12 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         }
         case OPCODE_DISCARD:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//DISCARD\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//DISCARD\n");
+            }
+
             psContext->AddIndentation();
             if (psInst->eBooleanTestType == INSTRUCTION_TEST_ZERO)
             {
@@ -3207,14 +3264,15 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         }
         case OPCODE_LOD:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//LOD\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//LOD\n");
+            }
             //LOD computes the following vector (ClampedLOD, NonClampedLOD, 0, 0)
 
             psContext->AddIndentation();
-            AddAssignToDest(&psInst->asOperands[0], SVT_FLOAT, 4, &numParenthesis);
+            AddAssignToDest(&psInst->asOperands[0], SVT_FLOAT, 4, psInst->ui32PreciseMask, numParenthesis);
 
             //If the core language does not have query-lod feature,
             //then the extension is used. The name of the function
@@ -3246,10 +3304,11 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         }
         case OPCODE_EVAL_CENTROID:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//EVAL_CENTROID\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//EVAL_CENTROID\n");
+            }
             psContext->AddIndentation();
             glsl << TranslateOperand(&psInst->asOperands[0], TO_FLAG_DESTINATION);
             bcatcstr(glsl, " = interpolateAtCentroid(");
@@ -3262,10 +3321,11 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         }
         case OPCODE_EVAL_SAMPLE_INDEX:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//EVAL_SAMPLE_INDEX\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//EVAL_SAMPLE_INDEX\n");
+            }
             psContext->AddIndentation();
             glsl << TranslateOperand(&psInst->asOperands[0], TO_FLAG_DESTINATION);
             bcatcstr(glsl, " = interpolateAtSample(");
@@ -3280,10 +3340,11 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         }
         case OPCODE_EVAL_SNAPPED:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//EVAL_SNAPPED\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//EVAL_SNAPPED\n");
+            }
             psContext->AddIndentation();
             glsl << TranslateOperand(&psInst->asOperands[0], TO_FLAG_DESTINATION);
             bcatcstr(glsl, " = interpolateAtOffset(");
@@ -3298,19 +3359,21 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         }
         case OPCODE_LD_STRUCTURED:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//LD_STRUCTURED\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//LD_STRUCTURED\n");
+            }
             TranslateShaderStorageLoad(psInst);
             break;
         }
         case OPCODE_LD_UAV_TYPED:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//LD_UAV_TYPED\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//LD_UAV_TYPED\n");
+            }
             Operand* psDest = &psInst->asOperands[0];
             Operand* psSrc = &psInst->asOperands[2];
             Operand* psSrcAddr = &psInst->asOperands[1];
@@ -3356,7 +3419,7 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
 
             int srcCount = psSrc->GetNumSwizzleElements(), numParenthesis = 0;
             psContext->AddIndentation();
-            AddAssignToDest(psDest, srcDataType, srcCount, &numParenthesis);
+            AddAssignToDest(psDest, srcDataType, srcCount, psInst->ui32PreciseMask, numParenthesis);
             glsl << TranslateOperand(psSrc, TO_FLAG_NAME_ONLY);
             bcatcstr(glsl, ".read(");
             glsl << TranslateOperand(psSrcAddr, flags, opMask);
@@ -3375,7 +3438,7 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
                 glsl << TranslateOperand(psSrcAddr, TO_FLAG_UNSIGNED_INTEGER, opMask);
             }
             bcatcstr(glsl, ")");
-            glsl << TranslateOperandSwizzle(&psInst->asOperands[0], OPERAND_4_COMPONENT_MASK_ALL, 0);
+            glsl << TranslateOperandSwizzle(psSrc, psDest->ui32CompMask, 0);
             AddAssignPrologue(numParenthesis);
 
 #undef RRD
@@ -3384,19 +3447,21 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         }
         case OPCODE_STORE_RAW:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//STORE_RAW\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//STORE_RAW\n");
+            }
             TranslateShaderStorageStore(psInst);
             break;
         }
         case OPCODE_STORE_STRUCTURED:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//STORE_STRUCTURED\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//STORE_STRUCTURED\n");
+            }
             TranslateShaderStorageStore(psInst);
             break;
         }
@@ -3406,10 +3471,11 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
             const ResourceBinding* psRes;
             int foundResource;
 
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//STORE_UAV_TYPED\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//STORE_UAV_TYPED\n");
+            }
             foundResource = psContext->psShader->sInfo.GetResourceFromBindingPoint(RGROUP_UAV,
                 psInst->asOperands[0].ui32RegisterNumber,
                 &psRes);
@@ -3482,11 +3548,11 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         }
         case OPCODE_LD_RAW:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//LD_RAW\n");
-#endif
-
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//LD_RAW\n");
+            }
             TranslateShaderStorageLoad(psInst);
             break;
         }
@@ -3517,13 +3583,14 @@ void ToMetal::TranslateInstruction(Instruction* psInst)
         case OPCODE_UBFE:
         case OPCODE_IBFE:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            if (psInst->eOpcode == OPCODE_UBFE)
-                bcatcstr(glsl, "//OPCODE_UBFE\n");
-            else
-                bcatcstr(glsl, "//OPCODE_IBFE\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                if (psInst->eOpcode == OPCODE_UBFE)
+                    bcatcstr(glsl, "//OPCODE_UBFE\n");
+                else
+                    bcatcstr(glsl, "//OPCODE_IBFE\n");
+            }
 
             bool isUBFE = psInst->eOpcode == OPCODE_UBFE;
             bool isScalar = psInst->asOperands[0].GetNumSwizzleElements() == 1;
@@ -3605,7 +3672,7 @@ template <int N> vec<int, N> bitFieldExtractI(const vec<uint, N> width, const ve
                 ui32Flags |= (TO_AUTO_EXPAND_TO_VEC2 << (maxElems - 2));
             }
 
-            AddAssignToDest(&psInst->asOperands[0], isUBFE ? SVT_UINT : SVT_INT, psInst->asOperands[0].GetNumSwizzleElements(), &numParenthesis);
+            AddAssignToDest(&psInst->asOperands[0], isUBFE ? SVT_UINT : SVT_INT, psInst->asOperands[0].GetNumSwizzleElements(), psInst->ui32PreciseMask, numParenthesis);
             bcatcstr(glsl, "bitFieldExtract");
             bcatcstr(glsl, isUBFE ? "U" : "I");
             bcatcstr(glsl, "(");
@@ -3623,10 +3690,11 @@ template <int N> vec<int, N> bitFieldExtractI(const vec<uint, N> width, const ve
             const uint32_t destElemCount = psInst->asOperands[0].GetNumSwizzleElements();
             const uint32_t srcElemCount = psInst->asOperands[1].GetNumSwizzleElements();
             int numParenthesis = 0;
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//RCP\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//RCP\n");
+            }
             psContext->AddIndentation();
 
             SHADER_VARIABLE_TYPE dstType = psInst->asOperands[0].GetDataType(psContext);
@@ -3640,7 +3708,7 @@ template <int N> vec<int, N> bitFieldExtractI(const vec<uint, N> width, const ve
             else
                 srcType = SVT_FLOAT;
 
-            AddAssignToDest(&psInst->asOperands[0], srcType, srcElemCount, &numParenthesis);
+            AddAssignToDest(&psInst->asOperands[0], srcType, srcElemCount, psInst->ui32PreciseMask, numParenthesis);
             bcatcstr(glsl, GetConstructorForTypeMetal(srcType, destElemCount));
             bcatcstr(glsl, "(1.0) / ");
             bcatcstr(glsl, GetConstructorForTypeMetal(srcType, destElemCount));
@@ -3654,10 +3722,11 @@ template <int N> vec<int, N> bitFieldExtractI(const vec<uint, N> width, const ve
         {
             uint32_t writeMask = psInst->asOperands[0].GetAccessMask();
 
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//F32TOF16\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//F32TOF16\n");
+            }
 
             for (int i = 0; i < 4; i++)
             {
@@ -3666,7 +3735,7 @@ template <int N> vec<int, N> bitFieldExtractI(const vec<uint, N> width, const ve
                 psContext->AddIndentation();
                 psInst->asOperands[0].ui32CompMask = (1 << i);
                 psInst->asOperands[0].eSelMode = OPERAND_4_COMPONENT_MASK_MODE;
-                AddAssignToDest(&psInst->asOperands[0], SVT_UINT, 1, &numParenthesis);
+                AddAssignToDest(&psInst->asOperands[0], SVT_UINT, 1, psInst->ui32PreciseMask, numParenthesis);
 
                 bcatcstr(glsl, "as_type<uint>(half2(");
                 glsl << TranslateOperand(&psInst->asOperands[1], TO_FLAG_NONE, (1 << i));
@@ -3679,10 +3748,11 @@ template <int N> vec<int, N> bitFieldExtractI(const vec<uint, N> width, const ve
         {
             uint32_t writeMask = psInst->asOperands[0].GetAccessMask();
 
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//F16TOF32\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//F16TOF32\n");
+            }
 
             for (int i = 0; i < 4; i++)
             {
@@ -3691,7 +3761,7 @@ template <int N> vec<int, N> bitFieldExtractI(const vec<uint, N> width, const ve
                 psContext->AddIndentation();
                 psInst->asOperands[0].ui32CompMask = (1 << i);
                 psInst->asOperands[0].eSelMode = OPERAND_4_COMPONENT_MASK_MODE;
-                AddAssignToDest(&psInst->asOperands[0], SVT_FLOAT, 1, &numParenthesis);
+                AddAssignToDest(&psInst->asOperands[0], SVT_FLOAT, 1, psInst->ui32PreciseMask, numParenthesis);
 
                 bcatcstr(glsl, "as_type<half2>(");
                 glsl << TranslateOperand(&psInst->asOperands[1], TO_AUTO_BITCAST_TO_UINT, (1 << i));
@@ -3703,14 +3773,15 @@ template <int N> vec<int, N> bitFieldExtractI(const vec<uint, N> width, const ve
         case OPCODE_INEG:
         {
             int numParenthesis = 0;
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//INEG\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//INEG\n");
+            }
             //dest = 0 - src0
             psContext->AddIndentation();
 
-            AddAssignToDest(&psInst->asOperands[0], SVT_INT, psInst->asOperands[1].GetNumSwizzleElements(), &numParenthesis);
+            AddAssignToDest(&psInst->asOperands[0], SVT_INT, psInst->asOperands[1].GetNumSwizzleElements(), psInst->ui32PreciseMask, numParenthesis);
 
             bcatcstr(glsl, "0 - ");
             glsl << TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER, psInst->asOperands[0].GetAccessMask());
@@ -3721,10 +3792,11 @@ template <int N> vec<int, N> bitFieldExtractI(const vec<uint, N> width, const ve
         case OPCODE_DERIV_RTX_FINE:
         case OPCODE_DERIV_RTX:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//DERIV_RTX\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//DERIV_RTX\n");
+            }
             CallHelper1("dfdx", psInst, 0, 1, 1);
             break;
         }
@@ -3732,28 +3804,31 @@ template <int N> vec<int, N> bitFieldExtractI(const vec<uint, N> width, const ve
         case OPCODE_DERIV_RTY_FINE:
         case OPCODE_DERIV_RTY:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//DERIV_RTY\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//DERIV_RTY\n");
+            }
             CallHelper1("dfdy", psInst, 0, 1, 1);
             break;
         }
         case OPCODE_LRP:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//LRP\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//LRP\n");
+            }
             CallHelper3("mix", psInst, 0, 2, 3, 1, 1);
             break;
         }
         case OPCODE_DP2ADD:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//DP2ADD\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//DP2ADD\n");
+            }
             psContext->AddIndentation();
             bool isFP16 = false;
             if (CanForceToHalfOperand(&psInst->asOperands[0])
@@ -3762,7 +3837,7 @@ template <int N> vec<int, N> bitFieldExtractI(const vec<uint, N> width, const ve
                 && CanForceToHalfOperand(&psInst->asOperands[2]))
                 isFP16 = true;
             int parenthesis = 0;
-            AddAssignToDest(&psInst->asOperands[0], isFP16 ? SVT_FLOAT16 : SVT_FLOAT, 2, &parenthesis);
+            AddAssignToDest(&psInst->asOperands[0], isFP16 ? SVT_FLOAT16 : SVT_FLOAT, 2, psInst->ui32PreciseMask, parenthesis);
 
             uint32_t flags = TO_AUTO_EXPAND_TO_VEC2;
             flags |= isFP16 ? TO_FLAG_FORCE_HALF : TO_AUTO_BITCAST_TO_FLOAT;
@@ -3779,10 +3854,11 @@ template <int N> vec<int, N> bitFieldExtractI(const vec<uint, N> width, const ve
         case OPCODE_POW:
         {
             // TODO Check POW opcode whether it actually needs the abs
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//POW\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//POW\n");
+            }
             psContext->AddIndentation();
             glsl << TranslateOperand(&psInst->asOperands[0], TO_FLAG_DESTINATION);
             bcatcstr(glsl, " = powr(abs(");
@@ -3795,12 +3871,13 @@ template <int N> vec<int, N> bitFieldExtractI(const vec<uint, N> width, const ve
 
         case OPCODE_IMM_ATOMIC_ALLOC:
         {
-#ifdef _DEBUG
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//IMM_ATOMIC_ALLOC\n");
+            }
             psContext->AddIndentation();
-            bcatcstr(glsl, "//IMM_ATOMIC_ALLOC\n");
-#endif
-            psContext->AddIndentation();
-            AddAssignToDest(&psInst->asOperands[0], SVT_UINT, 1, &numParenthesis);
+            AddAssignToDest(&psInst->asOperands[0], SVT_UINT, 1, psInst->ui32PreciseMask, numParenthesis);
             bcatcstr(glsl, "atomic_fetch_add_explicit(");
             glsl << ResourceName(RGROUP_UAV, psInst->asOperands[1].ui32RegisterNumber);
             bcatcstr(glsl, "_counter, 1, memory_order::memory_order_relaxed)");
@@ -3809,12 +3886,13 @@ template <int N> vec<int, N> bitFieldExtractI(const vec<uint, N> width, const ve
         }
         case OPCODE_IMM_ATOMIC_CONSUME:
         {
-#ifdef _DEBUG
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//IMM_ATOMIC_CONSUME\n");
+            }
             psContext->AddIndentation();
-            bcatcstr(glsl, "//IMM_ATOMIC_CONSUME\n");
-#endif
-            psContext->AddIndentation();
-            AddAssignToDest(&psInst->asOperands[0], SVT_UINT, 1, &numParenthesis);
+            AddAssignToDest(&psInst->asOperands[0], SVT_UINT, 1, psInst->ui32PreciseMask, numParenthesis);
             bcatcstr(glsl, "atomic_fetch_sub_explicit(");
             glsl << ResourceName(RGROUP_UAV, psInst->asOperands[1].ui32RegisterNumber);
             // Metal atomic sub returns previous value. Therefore minus one here to get the correct data index.
@@ -3825,40 +3903,43 @@ template <int N> vec<int, N> bitFieldExtractI(const vec<uint, N> width, const ve
 
         case OPCODE_NOT:
         {
-#ifdef _DEBUG
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//NOT\n");
+            }
             psContext->AddIndentation();
-            bcatcstr(glsl, "//NOT\n");
-#endif
-            psContext->AddIndentation();
-            AddAssignToDest(&psInst->asOperands[0], SVT_INT, psInst->asOperands[1].GetNumSwizzleElements(), &numParenthesis);
+            AddAssignToDest(&psInst->asOperands[0], SVT_INT, psInst->asOperands[1].GetNumSwizzleElements(), psInst->ui32PreciseMask, numParenthesis);
 
-            bcatcstr(glsl, "~");
+            bcatcstr(glsl, "~(");
+            numParenthesis++;
             glsl << TranslateOperand(&psInst->asOperands[1], TO_FLAG_INTEGER, psInst->asOperands[0].GetAccessMask());
             AddAssignPrologue(numParenthesis);
             break;
         }
         case OPCODE_XOR:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//XOR\n");
-#endif
-
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//XOR\n");
+            }
             CallBinaryOp("^", psInst, 0, 1, 2, SVT_UINT);
             break;
         }
         case OPCODE_RESINFO:
         {
-            uint32_t destElemCount = psInst->asOperands[0].GetNumSwizzleElements();
-            uint32_t destElem;
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//RESINFO\n");
-#endif
-
-            for (destElem = 0; destElem < destElemCount; ++destElem)
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
             {
-                GetResInfoData(psInst, psInst->asOperands[2].aui32Swizzle[destElem], destElem);
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//RESINFO\n");
+            }
+
+            const uint32_t mask = psInst->asOperands[0].GetAccessMask();
+            for (int i = 0; i < 4; ++i)
+            {
+                if ((1 << i) & mask)
+                    GetResInfoData(psInst, psInst->asOperands[2].aui32Swizzle[i], i);
             }
 
             break;
@@ -3866,23 +3947,25 @@ template <int N> vec<int, N> bitFieldExtractI(const vec<uint, N> width, const ve
 
         case OPCODE_BUFINFO:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//BUFINFO\n");
-#endif
-            psContext->m_Reflection.OnDiagnostics("Metal shading language does not support buffer size query from shader. Pass the size to shader as const instead.\n", 0, false); // TODO: change this into error after modifying gfx-test 450
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//BUFINFO\n");
+            }
+            psContext->m_Reflection.OnDiagnostics("Metal shading language does not support buffer size query from shader. Pass the size to shader as const instead.\n", 0, true);
             break;
         }
 
         case OPCODE_SAMPLE_INFO:
         {
-#ifdef _DEBUG
-            psContext->AddIndentation();
-            bcatcstr(glsl, "//SAMPLE_INFO\n");
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                psContext->AddIndentation();
+                bcatcstr(glsl, "//SAMPLE_INFO\n");
+            }
             const RESINFO_RETURN_TYPE eResInfoReturnType = psInst->eResInfoReturnType;
             psContext->AddIndentation();
-            AddAssignToDest(&psInst->asOperands[0], eResInfoReturnType == RESINFO_INSTRUCTION_RETURN_UINT ? SVT_UINT : SVT_FLOAT, 1, &numParenthesis);
+            AddAssignToDest(&psInst->asOperands[0], eResInfoReturnType == RESINFO_INSTRUCTION_RETURN_UINT ? SVT_UINT : SVT_FLOAT, 1, psInst->ui32PreciseMask, numParenthesis);
             bcatcstr(glsl, TranslateOperand(&psInst->asOperands[1], TO_FLAG_NAME_ONLY).c_str());
             bcatcstr(glsl, ".get_num_samples()");
             AddAssignPrologue(numParenthesis);
@@ -3921,7 +4004,7 @@ template <int N> vec<int, N> bitFieldExtractI(const vec<uint, N> width, const ve
         bool isFP16 = false;
         if (psInst->asOperands[0].GetDataType(psContext) == SVT_FLOAT16)
             isFP16 = true;
-        AddAssignToDest(&psInst->asOperands[0], isFP16 ? SVT_FLOAT16 : SVT_FLOAT, dstCount, &numParenthesis);
+        AddAssignToDest(&psInst->asOperands[0], isFP16 ? SVT_FLOAT16 : SVT_FLOAT, dstCount, psInst->ui32PreciseMask, numParenthesis);
         bcatcstr(glsl, "clamp(");
 
         glsl << TranslateOperand(&psInst->asOperands[0], isFP16 ? TO_FLAG_FORCE_HALF : TO_AUTO_BITCAST_TO_FLOAT);
@@ -3932,3 +4015,82 @@ template <int N> vec<int, N> bitFieldExtractI(const vec<uint, N> width, const ve
         AddAssignPrologue(numParenthesis);
     }
 }
+
+#if ENABLE_UNIT_TESTS
+
+#define UNITY_EXTERNAL_TOOL 1
+#include "Projects/PrecompiledHeaders/UnityPrefix.h" // Needed for defines such as ENABLE_CPP_EXCEPTIONS
+#include "Runtime/Testing/Testing.h"
+
+UNIT_TEST_SUITE(ToMetalInstructionTests)
+{
+    static void TestAddOpAssignToDest(const char* expect, SHADER_VARIABLE_TYPE srcType, uint32_t srcDim, SHADER_VARIABLE_TYPE dstType, uint32_t dstDim)
+    {
+        bstring actual = bfromcstralloc(20, "");
+        bstring expected = bfromcstralloc(20, expect);
+        int parenthesis = 0;
+        AddOpAssignToDest(actual, srcType, srcDim, dstType, dstDim, 0, parenthesis);
+        CHECK(bstrcmp(actual, expected) == 0);
+        bdestroy(actual);
+        bdestroy(expected);
+    }
+
+    TEST(AddOpAssignToDest_Works)
+    {
+        // Different Type
+        TestAddOpAssignToDest(" = as_type<float>(", SVT_INT, 1, SVT_FLOAT, 1);
+        TestAddOpAssignToDest(" = uint(", SVT_INT, 1, SVT_UINT, 1);
+        TestAddOpAssignToDest(" = as_type<int>(", SVT_FLOAT, 1, SVT_INT, 1);
+        TestAddOpAssignToDest(" = as_type<uint>(", SVT_FLOAT, 1, SVT_UINT, 1);
+
+        TestAddOpAssignToDest(" = as_type<half>(", SVT_INT16, 1, SVT_FLOAT16, 1);
+        TestAddOpAssignToDest(" = ushort(", SVT_INT16, 1, SVT_UINT16, 1);
+        TestAddOpAssignToDest(" = as_type<short>(", SVT_FLOAT16, 1, SVT_INT16, 1);
+        TestAddOpAssignToDest(" = as_type<ushort>(", SVT_FLOAT16, 1, SVT_UINT16, 1);
+
+        // Simply assign
+        TestAddOpAssignToDest(" = ", SVT_UINT16, 1, SVT_UINT16, 1);
+        TestAddOpAssignToDest(" = ", SVT_INT, 4, SVT_INT, 2);
+
+        // Up cast
+        TestAddOpAssignToDest(" = uint(", SVT_UINT16, 1, SVT_UINT, 1);
+        TestAddOpAssignToDest(" = float(", SVT_FLOAT16, 1, SVT_FLOAT, 1);
+        TestAddOpAssignToDest(" = int(", SVT_INT16, 1, SVT_INT, 1);
+
+        // Down cast
+        TestAddOpAssignToDest(" = ushort(", SVT_UINT, 1, SVT_UINT16, 1);
+        TestAddOpAssignToDest(" = half(", SVT_FLOAT, 1, SVT_FLOAT16, 1);
+        TestAddOpAssignToDest(" = short(", SVT_INT, 1, SVT_INT16, 1);
+
+        // Increase dimensions
+        TestAddOpAssignToDest(" = float4(", SVT_FLOAT, 1, SVT_FLOAT, 4);
+        TestAddOpAssignToDest(" = uint3(", SVT_UINT, 1, SVT_UINT, 3);
+        TestAddOpAssignToDest(" = uint2(", SVT_UINT, 1, SVT_UINT, 2);
+
+        // Decrease dimensions
+        TestAddOpAssignToDest(" = ", SVT_FLOAT, 4, SVT_FLOAT, 1);
+        TestAddOpAssignToDest(" = ", SVT_UINT, 3, SVT_UINT, 1);
+        TestAddOpAssignToDest(" = ", SVT_UINT, 2, SVT_UINT, 1);
+
+        // Reinterop cast + Increase dimensions
+        TestAddOpAssignToDest(" = as_type<float4>(int4(", SVT_INT, 1, SVT_FLOAT, 4);
+        TestAddOpAssignToDest(" = uint4(", SVT_INT, 1, SVT_UINT, 4);
+        TestAddOpAssignToDest(" = as_type<int4>(float4(", SVT_FLOAT, 1, SVT_INT, 4);
+        TestAddOpAssignToDest(" = as_type<uint4>(float4(", SVT_FLOAT, 1, SVT_UINT, 4);
+
+        // Reinterop cast + Decrease dimensions
+        TestAddOpAssignToDest(" = as_type<float>(", SVT_INT, 4, SVT_FLOAT, 1);
+        TestAddOpAssignToDest(" = uint(", SVT_INT, 4, SVT_UINT, 1);
+        TestAddOpAssignToDest(" = as_type<int>(", SVT_FLOAT, 4, SVT_INT, 1);
+        TestAddOpAssignToDest(" = as_type<uint>(", SVT_FLOAT, 4, SVT_UINT, 1);
+
+        // Different precision + Different Type
+        TestAddOpAssignToDest(" = float4(", SVT_INT16, 4, SVT_FLOAT, 4);
+        TestAddOpAssignToDest(" = short4(", SVT_FLOAT, 4, SVT_INT16, 4);
+
+        // Sanity check as low precision not used in metal they should fall back
+        TestAddOpAssignToDest(" = short4(", SVT_FLOAT, 4, SVT_INT12, 4);
+        TestAddOpAssignToDest(" = half4(", SVT_INT, 4, SVT_FLOAT10, 4);
+    }
+}
+#endif

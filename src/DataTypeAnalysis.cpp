@@ -430,13 +430,17 @@ void HLSLcc::DataTypeAnalysis::SetDataTypes(HLSLCrossCompilerContext* psContext,
 
                 case OPCODE_LD:
                 case OPCODE_LD_MS:
-                    // TODO: Would need to know the sampler return type
-                    MarkOperandAs(&psInst->asOperands[0], SVT_FLOAT, aeTempVecType);
+                {
+                    SHADER_VARIABLE_TYPE samplerReturnType = psInst->asOperands[2].aeDataType[0];
+                    MarkOperandAs(&psInst->asOperands[0], samplerReturnType, aeTempVecType);
                     MarkOperandAs(&psInst->asOperands[1], SVT_UINT, aeTempVecType);
                     break;
+                }
 
                 case OPCODE_MOVC:
                     MarkOperandAs(&psInst->asOperands[1], SVT_BOOL, aeTempVecType);
+                    break;
+
                 case OPCODE_SWAPC:
                     MarkOperandAs(&psInst->asOperands[2], SVT_BOOL, aeTempVecType);
                     break;
@@ -455,6 +459,7 @@ void HLSLcc::DataTypeAnalysis::SetDataTypes(HLSLCrossCompilerContext* psContext,
                             MarkOperandAs(&psInst->asOperands[0], SVT_UINT, aeTempVecType);
                             break;
                     }
+                    break;
 
                 case OPCODE_SAMPLE_INFO:
                     // Sample_info uses the same RESINFO_RETURN_TYPE for storage. 0 = float, 1 = uint.
@@ -594,20 +599,6 @@ void HLSLcc::DataTypeAnalysis::SetDataTypes(HLSLCrossCompilerContext* psContext,
                 case OPCODE_DCL_RESOURCE_STRUCTURED:
                 case OPCODE_SYNC:
 
-                // TODO
-                case OPCODE_DADD:
-                case OPCODE_DMAX:
-                case OPCODE_DMIN:
-                case OPCODE_DMUL:
-                case OPCODE_DEQ:
-                case OPCODE_DGE:
-                case OPCODE_DLT:
-                case OPCODE_DNE:
-                case OPCODE_DMOV:
-                case OPCODE_DMOVC:
-                case OPCODE_DTOF:
-                case OPCODE_FTOD:
-
                 case OPCODE_EVAL_SNAPPED:
                 case OPCODE_EVAL_SAMPLE_INDEX:
                 case OPCODE_EVAL_CENTROID:
@@ -615,7 +606,22 @@ void HLSLcc::DataTypeAnalysis::SetDataTypes(HLSLCrossCompilerContext* psContext,
                 case OPCODE_DCL_GS_INSTANCE_COUNT:
 
                 case OPCODE_ABORT:
-                case OPCODE_DEBUG_BREAK:*/
+                case OPCODE_DEBUG_BREAK:
+
+                 // Double not supported
+                 case OPCODE_DADD:
+                 case OPCODE_DMAX:
+                 case OPCODE_DMIN:
+                 case OPCODE_DMUL:
+                 case OPCODE_DEQ:
+                 case OPCODE_DGE:
+                 case OPCODE_DLT:
+                 case OPCODE_DNE:
+                 case OPCODE_DMOV:
+                 case OPCODE_DMOVC:
+                 case OPCODE_DTOF:
+                 case OPCODE_FTOD:
+                 */
 
                 default:
                     break;

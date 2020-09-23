@@ -573,61 +573,61 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
             {
                 case SVT_FLOAT:
                     ASSERT(psContext->psShader->psFloatTempSizes[psOperand->ui32RegisterNumber] != 0);
-                    if (psContext->psShader->psFloatTempSizes[psOperand->ui32RegisterNumber] == 1 && pui32IgnoreSwizzle)
+                    if (psContext->psShader->psFloatTempSizes[psOperand->ui32RegisterNumber] == 1)
                         *pui32IgnoreSwizzle = 1;
                     break;
                 case SVT_FLOAT16:
                     ASSERT(psContext->psShader->psFloat16TempSizes[psOperand->ui32RegisterNumber] != 0);
                     oss << ("16_");
-                    if (psContext->psShader->psFloat16TempSizes[psOperand->ui32RegisterNumber] == 1 && pui32IgnoreSwizzle)
+                    if (psContext->psShader->psFloat16TempSizes[psOperand->ui32RegisterNumber] == 1)
                         *pui32IgnoreSwizzle = 1;
                     break;
                 case SVT_FLOAT10:
                     ASSERT(psContext->psShader->psFloat10TempSizes[psOperand->ui32RegisterNumber] != 0);
                     oss << ("10_");
-                    if (psContext->psShader->psFloat10TempSizes[psOperand->ui32RegisterNumber] == 1 && pui32IgnoreSwizzle)
+                    if (psContext->psShader->psFloat10TempSizes[psOperand->ui32RegisterNumber] == 1)
                         *pui32IgnoreSwizzle = 1;
                     break;
                 case SVT_INT:
                     ASSERT(psContext->psShader->psIntTempSizes[psOperand->ui32RegisterNumber] != 0);
                     oss << ("i");
-                    if (psContext->psShader->psIntTempSizes[psOperand->ui32RegisterNumber] == 1 && pui32IgnoreSwizzle)
+                    if (psContext->psShader->psIntTempSizes[psOperand->ui32RegisterNumber] == 1)
                         *pui32IgnoreSwizzle = 1;
                     break;
                 case SVT_INT16:
                     ASSERT(psContext->psShader->psInt16TempSizes[psOperand->ui32RegisterNumber] != 0);
                     oss << ("i16_");
-                    if (psContext->psShader->psInt16TempSizes[psOperand->ui32RegisterNumber] == 1 && pui32IgnoreSwizzle)
+                    if (psContext->psShader->psInt16TempSizes[psOperand->ui32RegisterNumber] == 1)
                         *pui32IgnoreSwizzle = 1;
                     break;
                 case SVT_INT12:
                     ASSERT(psContext->psShader->psInt12TempSizes[psOperand->ui32RegisterNumber] != 0);
                     oss << ("i12_");
-                    if (psContext->psShader->psInt12TempSizes[psOperand->ui32RegisterNumber] == 1 && pui32IgnoreSwizzle)
+                    if (psContext->psShader->psInt12TempSizes[psOperand->ui32RegisterNumber] == 1)
                         *pui32IgnoreSwizzle = 1;
                     break;
                 case SVT_UINT:
                     ASSERT(psContext->psShader->psUIntTempSizes[psOperand->ui32RegisterNumber] != 0);
                     oss << ("u");
-                    if (psContext->psShader->psUIntTempSizes[psOperand->ui32RegisterNumber] == 1 && pui32IgnoreSwizzle)
+                    if (psContext->psShader->psUIntTempSizes[psOperand->ui32RegisterNumber] == 1)
                         *pui32IgnoreSwizzle = 1;
                     break;
                 case SVT_UINT16:
                     ASSERT(psContext->psShader->psUInt16TempSizes[psOperand->ui32RegisterNumber] != 0);
                     oss << ("u16_");
-                    if (psContext->psShader->psUInt16TempSizes[psOperand->ui32RegisterNumber] == 1 && pui32IgnoreSwizzle)
+                    if (psContext->psShader->psUInt16TempSizes[psOperand->ui32RegisterNumber] == 1)
                         *pui32IgnoreSwizzle = 1;
                     break;
                 case SVT_DOUBLE:
                     ASSERT(psContext->psShader->psDoubleTempSizes[psOperand->ui32RegisterNumber] != 0);
                     oss << ("d");
-                    if (psContext->psShader->psDoubleTempSizes[psOperand->ui32RegisterNumber] == 1 && pui32IgnoreSwizzle)
+                    if (psContext->psShader->psDoubleTempSizes[psOperand->ui32RegisterNumber] == 1)
                         *pui32IgnoreSwizzle = 1;
                     break;
                 case SVT_BOOL:
                     ASSERT(psContext->psShader->psBoolTempSizes[psOperand->ui32RegisterNumber] != 0);
                     oss << ("b");
-                    if (psContext->psShader->psBoolTempSizes[psOperand->ui32RegisterNumber] == 1 && pui32IgnoreSwizzle)
+                    if (psContext->psShader->psBoolTempSizes[psOperand->ui32RegisterNumber] == 1)
                         *pui32IgnoreSwizzle = 1;
                     break;
                 default:
@@ -843,7 +843,7 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
                     }
                 }
 
-                if (psVarType && psVarType->Class == SVC_VECTOR && !*pui32IgnoreSwizzle)
+                if (psVarType->Class == SVC_VECTOR && !*pui32IgnoreSwizzle)
                 {
                     switch (rebase)
                     {
@@ -887,7 +887,7 @@ std::string ToMetal::TranslateVariableName(const Operand* psOperand, uint32_t ui
                     }
                 }
 
-                if (psVarType && psVarType->Class == SVC_SCALAR)
+                if (psVarType->Class == SVC_SCALAR)
                 {
                     *pui32IgnoreSwizzle = 1;
 

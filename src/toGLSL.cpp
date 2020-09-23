@@ -497,6 +497,11 @@ static void DoHullShaderPassthrough(HLSLCrossCompilerContext *psContext)
             inputName = oss.str();
         }
 
+        if (psContext->psDependencies->IsHullShaderInputAlreadyDeclared(inputName))
+            continue;
+
+        psContext->psDependencies->RecordHullShaderInput(inputName);
+
         std::string outputName;
         {
             std::ostringstream oss;
@@ -513,8 +518,9 @@ static void DoHullShaderPassthrough(HLSLCrossCompilerContext *psContext)
                 prec = "highp ";
         }
 
-        int inLoc = psContext->psDependencies->GetVaryingLocation(inputName, HULL_SHADER, true);
-        int outLoc = psContext->psDependencies->GetVaryingLocation(outputName, HULL_SHADER, false);
+        bool keepLocation = ((psContext->flags & HLSLCC_FLAG_KEEP_VARYING_LOCATIONS) != 0);
+        int inLoc = psContext->psDependencies->GetVaryingLocation(inputName, HULL_SHADER, true, keepLocation, psContext->psShader->maxSemanticIndex);
+        int outLoc = psContext->psDependencies->GetVaryingLocation(outputName, HULL_SHADER, false, keepLocation, psContext->psShader->maxSemanticIndex);
 
         psContext->AddIndentation();
         if (ui32NumComponents > 1)
@@ -562,6 +568,29 @@ GLLang ToGLSL::SetLanguage(GLLang suggestedLanguage)
     return language;
 }
 
+// Go through all declarations and remove reserve UAV occupied binding points
+void ResolveStructuredBufferBindingSlots(ShaderPhase *psPhase, HLSLCrossCompilerContext *psContext, GLSLCrossDependencyData *glslDependencyData)
+{
+    for (uint32_t p = 0; p < psPhase->psDecl.size(); ++p)
+    {
+        if (psPhase->psDecl[p].eOpcode == OPCODE_DCL_UNORDERED_ACCESS_VIEW_RAW ||
+            psPhase->psDecl[p].eOpcode == OPCODE_DCL_UNORDERED_ACCESS_VIEW_STRUCTURED)
+        {
+            uint32_t uav = psPhase->psDecl[p].asOperands[0].ui32RegisterNumber; // uav binding point
+
+            bstring BufNamebstr = bfromcstr("");
+            ResourceName(BufNamebstr, psContext, RGROUP_UAV, psPhase->psDecl[p].asOperands[0].ui32RegisterNumber, 0);
+
+            char *btmp = bstr2cstr(BufNamebstr, '\0');
+            std::string BufName = btmp;
+            bcstrfree(btmp);
+            bdestroy(BufNamebstr);
+
+            glslDependencyData->ReserveNamedBindPoint(BufName, uav, GLSLCrossDependencyData::BufferType_ReadWrite);
+        }
+    }
+}
+
 bool ToGLSL::Translate()
 {
     bstring glsl;
@@ -578,6 +607,8 @@ bool ToGLSL::Translate()
     psShader->ExpandSWAPCs();
     psShader->ForcePositionToHighp();
     psShader->AnalyzeIOOverlap();
+    if ((psContext->flags & HLSLCC_FLAG_KEEP_VARYING_LOCATIONS) != 0)
+        psShader->SetMaxSemanticIndex();
     psShader->FindUnusedGlobals(psContext->flags);
 
     psContext->indent = 0;
@@ -633,18 +664,44 @@ bool ToGLSL::Translate()
         bcatcstr(glsl, "#endif\n");
     }
 
-
-    psShader->PrepareStructuredBufferBindingSlots();
+    if (psContext->psShader->eTargetLanguage != LANG_ES_100)
+    {
+        bool hasConstantBuffers = psContext->psShader->sInfo.psConstantBuffers.size() > 0;
+        if (hasConstantBuffers)
+        {
+            // This value will be replaced at runtime with 0 if we need to disable UBO.
+            bcatcstr(glsl, "#define HLSLCC_ENABLE_UNIFORM_BUFFERS 1\n");
+            bcatcstr(glsl, "#if HLSLCC_ENABLE_UNIFORM_BUFFERS\n#define UNITY_UNIFORM\n#else\n#define UNITY_UNIFORM uniform\n#endif\n");
+        }
+        bool hasTextures = false;
+        for (i = 0; i < psShader->asPhases[0].psDecl.size(); ++i)
+        {
+            if (psShader->asPhases[0].psDecl[i].eOpcode == OPCODE_DCL_RESOURCE)
+            {
+                hasTextures = true;
+                break;
+            }
+        }
+        if (hasTextures || hasConstantBuffers)
+        {
+            // This value will be replaced at runtime with 0 if we need to disable explicit uniform locations.
+            bcatcstr(glsl, "#define UNITY_SUPPORTS_UNIFORM_LOCATION 1\n");
+            bcatcstr(glsl, "#if UNITY_SUPPORTS_UNIFORM_LOCATION\n#define UNITY_LOCATION(x) layout(location = x)\n#define UNITY_BINDING(x) layout(binding = x, std140)\n#else\n#define UNITY_LOCATION(x)\n#define UNITY_BINDING(x) layout(std140)\n#endif\n");
+        }
+    }
 
     for (ui32Phase = 0; ui32Phase < psShader->asPhases.size(); ui32Phase++)
     {
         ShaderPhase &phase = psShader->asPhases[ui32Phase];
         phase.UnvectorizeImmMoves();
         psContext->DoDataTypeAnalysis(&phase);
-        phase.ResolveUAVProperties();
-        psShader->ResolveStructuredBufferBindingSlots(&phase);
+        phase.ResolveUAVProperties(psShader->sInfo);
+        ResolveStructuredBufferBindingSlots(&phase, psContext, psContext->psDependencies);
         if (!psContext->IsVulkan() && !psContext->IsSwitch())
+        {
             phase.PruneConstArrays();
+            psContext->ReserveFramebufferFetchInputs();
+        }
     }
 
     psShader->PruneTempRegisters();
@@ -654,11 +711,6 @@ bool ToGLSL::Translate()
         // Loop transform can only be done after the temps have been pruned
         ShaderPhase &phase = psShader->asPhases[ui32Phase];
         HLSLcc::DoLoopTransform(psContext, phase);
-
-        if ((psContext->flags & HLSLCC_FLAG_VULKAN_SPECIALIZATION_CONSTANTS) != 0)
-        {
-            IdentifyStaticBranches(&phase);
-        }
     }
 
     //Special case. Can have multiple phases.
@@ -694,19 +746,15 @@ bool ToGLSL::Translate()
             ShaderPhase *psPhase = &psShader->asPhases[ui32Phase];
             psContext->currentPhase = ui32Phase;
 
-#ifdef _DEBUG
-            bformata(glsl, "//%s declarations\n", GetPhaseFuncName(psPhase->ePhase));
-#endif
+            if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+            {
+                bformata(glsl, "//%s declarations\n", GetPhaseFuncName(psPhase->ePhase));
+            }
+
             for (i = 0; i < psPhase->psDecl.size(); ++i)
             {
                 TranslateDeclaration(&psPhase->psDecl[i]);
             }
-
-            if ((psContext->flags & HLSLCC_FLAG_VULKAN_SPECIALIZATION_CONSTANTS) != 0)
-            {
-                DeclareSpecializationConstants(*psPhase);
-            }
-
 
             bformata(glsl, "void %s%d(int phaseInstanceID)\n{\n", GetPhaseFuncName(psPhase->ePhase), ui32Phase);
             psContext->indent++;
@@ -758,15 +806,19 @@ bool ToGLSL::Translate()
 
                 if (psPhase->earlyMain->slen > 1)
                 {
-#ifdef _DEBUG
-                    psContext->AddIndentation();
-                    bcatcstr(glsl, "//--- Start Early Main ---\n");
-#endif
+                    if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+                    {
+                        psContext->AddIndentation();
+                        bcatcstr(glsl, "//--- Start Early Main ---\n");
+                    }
+
                     bconcat(glsl, psPhase->earlyMain);
-#ifdef _DEBUG
-                    psContext->AddIndentation();
-                    bcatcstr(glsl, "//--- End Early Main ---\n");
-#endif
+
+                    if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+                    {
+                        psContext->AddIndentation();
+                        bcatcstr(glsl, "//--- End Early Main ---\n");
+                    }
                 }
 
                 for (i = 0; i < psPhase->ui32InstanceCount; i++)
@@ -777,15 +829,19 @@ bool ToGLSL::Translate()
 
                 if (psPhase->hasPostShaderCode)
                 {
-#ifdef _DEBUG
-                    psContext->AddIndentation();
-                    bcatcstr(glsl, "//--- Post shader code ---\n");
-#endif
+                    if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+                    {
+                        psContext->AddIndentation();
+                        bcatcstr(glsl, "//--- Post shader code ---\n");
+                    }
+
                     bconcat(glsl, psPhase->postShaderCode);
-#ifdef _DEBUG
-                    psContext->AddIndentation();
-                    bcatcstr(glsl, "//--- End post shader code ---\n");
-#endif
+
+                    if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+                    {
+                        psContext->AddIndentation();
+                        bcatcstr(glsl, "//--- End post shader code ---\n");
+                    }
                 }
 
 
@@ -832,6 +888,13 @@ bool ToGLSL::Translate()
             else
             {
                 bcatcstr(extensions, "#ifndef " UNITY_RUNTIME_INSTANCING_ARRAY_SIZE_MACRO "\n\t#define " UNITY_RUNTIME_INSTANCING_ARRAY_SIZE_MACRO " 2\n#endif\n");
+            }
+        }
+        if (m_NeedUnityPreTransformDecl)
+        {
+            if (psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS)
+            {
+                bformata(extensions, "layout(constant_id = %d) const int %s = 0;\n", kPreTransformConstantID, UNITY_PRETRANSFORM_CONSTANT_NAME);
             }
         }
 
@@ -912,11 +975,6 @@ bool ToGLSL::Translate()
         TranslateDeclaration(&psShader->asPhases[0].psDecl[i]);
     }
 
-    if ((psContext->flags & HLSLCC_FLAG_VULKAN_SPECIALIZATION_CONSTANTS) != 0)
-    {
-        DeclareSpecializationConstants(psShader->asPhases[0]);
-    }
-
     // Search and replace string, for injecting generated functions that need to be after default precision declarations
     bconcat(glsl, generatedFunctionsKeyword);
 
@@ -932,15 +990,19 @@ bool ToGLSL::Translate()
 
     if (psContext->psShader->asPhases[0].earlyMain->slen > 1)
     {
-#ifdef _DEBUG
-        psContext->AddIndentation();
-        bcatcstr(glsl, "//--- Start Early Main ---\n");
-#endif
+        if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+        {
+            psContext->AddIndentation();
+            bcatcstr(glsl, "//--- Start Early Main ---\n");
+        }
+
         bconcat(glsl, psContext->psShader->asPhases[0].earlyMain);
-#ifdef _DEBUG
-        psContext->AddIndentation();
-        bcatcstr(glsl, "//--- End Early Main ---\n");
-#endif
+
+        if (psContext->flags & HLSLCC_FLAG_INCLUDE_INSTRUCTIONS_COMMENTS)
+        {
+            psContext->AddIndentation();
+            bcatcstr(glsl, "//--- End Early Main ---\n");
+        }
     }
 
     for (i = 0; i < psShader->asPhases[0].psInst.size(); ++i)
@@ -952,18 +1014,26 @@ bool ToGLSL::Translate()
 
     bcatcstr(glsl, "}\n");
 
-    // Print out extra functions we generated in generation order to satisfy dependencies
+    // Print out extra definitions and functions we generated in generation order to satisfy dependencies
     {
-        bstring generatedFunctions = bfromcstr("");
+        bstring generatedFunctionsAndDefinitions = bfromcstr("");
+
+        for (size_t i = 0; i < m_AdditionalDefinitions.size(); ++i)
+        {
+            bcatcstr(generatedFunctionsAndDefinitions, m_AdditionalDefinitions[i].c_str());
+            bcatcstr(generatedFunctionsAndDefinitions, "\n");
+        }
+
         for (std::vector<std::string>::const_iterator funcNameIter = m_FunctionDefinitionsOrder.begin(); funcNameIter != m_FunctionDefinitionsOrder.end(); ++funcNameIter)
         {
             const FunctionDefinitions::const_iterator definition = m_FunctionDefinitions.find(*funcNameIter);
             ASSERT(definition != m_FunctionDefinitions.end());
-            bcatcstr(generatedFunctions, definition->second.c_str());
-            bcatcstr(generatedFunctions, "\n");
+            bcatcstr(generatedFunctionsAndDefinitions, definition->second.c_str());
+            bcatcstr(generatedFunctionsAndDefinitions, "\n");
         }
-        bfindreplace(glsl, generatedFunctionsKeyword, generatedFunctions, 0);
-        bdestroy(generatedFunctions);
+        bfindreplace(glsl, generatedFunctionsKeyword, generatedFunctionsAndDefinitions, 0);
+        bdestroy(generatedFunctionsAndDefinitions);
+        bdestroy(generatedFunctionsKeyword);
     }
 
     // Concat extensions and glsl for the final shader code.
@@ -976,6 +1046,13 @@ bool ToGLSL::Translate()
         else
         {
             bcatcstr(extensions, "#ifndef " UNITY_RUNTIME_INSTANCING_ARRAY_SIZE_MACRO "\n\t#define " UNITY_RUNTIME_INSTANCING_ARRAY_SIZE_MACRO " 2\n#endif\n");
+        }
+    }
+    if (m_NeedUnityPreTransformDecl)
+    {
+        if (psContext->flags & HLSLCC_FLAG_VULKAN_BINDINGS)
+        {
+            bformata(extensions, "layout(constant_id = %d) const int %s = 0;\n", kPreTransformConstantID, UNITY_PRETRANSFORM_CONSTANT_NAME);
         }
     }
     bconcat(extensions, glsl);
@@ -1110,234 +1187,4 @@ void ToGLSL::UseExtraFunctionDependency(const std::string &name)
         DeclareExtraFunction(name, code);
 
     bdestroy(code);
-}
-
-void ToGLSL::DeclareSpecializationConstants(ShaderPhase &phase)
-{
-    bstring glsl = psContext->glsl;
-    // There may be several uses for the same branch condition, so we'll need to keep track of what we've already declared.
-    std::set<uint32_t> alreadyDeclared;
-    for (std::vector<Instruction *>::iterator itr = phase.m_StaticBranchInstructions.begin(); itr != phase.m_StaticBranchInstructions.end(); itr++)
-    {
-        Instruction &i = **itr;
-        uint32_t slot = psContext->psDependencies->GetSpecializationConstantSlot(i.m_StaticBranchName);
-        if (alreadyDeclared.insert(slot).second) // Only declare if the insertion actually succeeded
-            bformata(glsl, "layout(constant_id = %d) const bool %s = false;\n", slot, i.m_StaticBranchName.c_str());
-    }
-}
-
-std::string to64(uint32_t in)
-{
-    const char to64[] =
-        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-    char c_[2];
-    c_[0] = to64[in];
-    c_[1] = 0;
-    char c = c_[0];
-    if (c == 'X')
-        return "XX";
-    if (c == '+')
-        return "XA";
-    if (c == '/')
-        return "XB";
-    return std::string(c_);
-}
-
-// Slightly custom base64, espace non-identifier chars with 'X'
-static void Base64Encode(const std::string &in, std::string& result)
-{
-    size_t len = in.length();
-    size_t outputLen = (len + 2) / 3 * 4;
-    unsigned char *bytes = (unsigned char *)&in[0];
-
-    result.clear();
-    result.reserve(outputLen);
-
-    int i = 0;
-    unsigned char b1, b2, b3;
-    for (int chunk = 0; len > 0; len -= 3, chunk++)
-    {
-        b1 = bytes[i++];
-        b2 = len > 1 ? bytes[i++] : '\0';
-        result += to64(b1 >> 2);
-        result += to64(((b1 & 3) << 4) | ((b2 & 0xf0) >> 4));
-        if (len > 2)
-        {
-            b3 = bytes[i++];
-            result += to64(((b2 & 0xF) << 2) | ((b3 & 0xC0) >> 6));
-            result += to64(b3 & 0x3F);
-        }
-        else if (len == 2)
-        {
-            result += to64((b2 & 0xF) << 2);
-            result += "XC";
-            break;
-        }
-        else /* len == 1 */
-        {
-            result += "XC";
-            break;
-        }
-    }
-}
-
-bool ToGLSL::BuildStaticBranchNameForInstruction(Instruction &inst)
-{
-    std::ostringstream oss;
-    if (!inst.m_StaticBranchCondition)
-    {
-        // Simple case, just get the value, check if nonzero
-        bstring varname = bfromcstr("");
-        SHADER_VARIABLE_TYPE argType = inst.asOperands[0].GetDataType(psContext);
-        uint32_t flag = TO_FLAG_NONE;
-        switch (argType)
-        {
-            case SVT_BOOL:
-                flag = TO_FLAG_BOOL;
-                break;
-            case SVT_INT:
-            case SVT_INT12:
-            case SVT_INT16:
-                flag = TO_FLAG_INTEGER;
-                break;
-            case SVT_UINT:
-            case SVT_UINT16:
-            case SVT_UINT8:
-                flag = TO_FLAG_UNSIGNED_INTEGER;
-                break;
-            default:
-                break;
-        }
-        TranslateOperand(varname, &inst.asOperands[0], flag);
-        char *str = bstr2cstr(varname, '\0');
-        oss << str;
-        bcstrfree(str);
-        bdestroy(varname);
-        oss << "!=0";
-        std::string res = oss.str();
-        // Sanity checks: no arrays, no matrices
-        if (res.find('[') != std::string::npos)
-            return false;
-        if (res.find("hlslcc_mtx") != std::string::npos)
-            return false;
-        Base64Encode(res, inst.m_StaticBranchName);
-    }
-    else
-    {
-        // Indirect, just store the whole previous instruction and then the condition
-        bstring res = bfromcstr("");
-
-        bstring *oldglsl = psContext->currentGLSLString;
-        psContext->currentGLSLString = &res;
-        TranslateInstruction((Instruction *)inst.m_StaticBranchCondition, true);
-        psContext->currentGLSLString = oldglsl;
-
-        SHADER_VARIABLE_TYPE argType = inst.asOperands[0].GetDataType(psContext);
-        uint32_t flag = TO_FLAG_NONE;
-        switch (argType)
-        {
-            case SVT_BOOL:
-                flag = TO_FLAG_BOOL;
-                break;
-            case SVT_INT:
-            case SVT_INT12:
-            case SVT_INT16:
-                flag = TO_FLAG_INTEGER;
-                break;
-            case SVT_UINT:
-            case SVT_UINT16:
-            case SVT_UINT8:
-                flag = TO_FLAG_UNSIGNED_INTEGER;
-                break;
-            default:
-                break;
-        }
-
-        if (argType == SVT_BOOL)
-        {
-            if (inst.eBooleanTestType == INSTRUCTION_TEST_ZERO)
-                bcatcstr(res, "!");
-        }
-
-        TranslateOperand(res, &inst.asOperands[0], flag);
-        char *str = bstr2cstr(res, '\0');
-        oss << str;
-        bcstrfree(str);
-        bdestroy(res);
-        if (argType != SVT_BOOL)
-            oss << "!=0";
-
-        std::string ress = oss.str();
-        // Sanity checks: no arrays, no matrices
-        if (ress.find('[') != std::string::npos)
-            return false;
-        if (ress.find("hlslcc_mtx") != std::string::npos)
-            return false;
-        Base64Encode(ress, inst.m_StaticBranchName);
-    }
-    return true;
-}
-
-void ToGLSL::IdentifyStaticBranches(ShaderPhase *psPhase)
-{
-    for (std::vector<Instruction>::iterator itr = psPhase->psInst.begin(); itr != psPhase->psInst.end(); itr++)
-    {
-        Instruction &i = *itr;
-
-        if (!i.IsConditionalBranchInstruction())
-            continue;
-
-        // Simple case, direct conditional branch
-        if (i.asOperands[0].eType == OPERAND_TYPE_CONSTANT_BUFFER)
-        {
-            i.m_StaticBranchCondition = NULL;
-            if (BuildStaticBranchNameForInstruction(i))
-            {
-                psPhase->m_StaticBranchInstructions.push_back(&i);
-                i.m_IsStaticBranch = true;
-            }
-        }
-        // Indirect, comparison via another instruction
-        if (i.asOperands[0].eType == OPERAND_TYPE_TEMP)
-        {
-            // Check that the temp only has one visible definition
-            if (i.asOperands[0].m_Defines.size() == 1)
-            {
-                // ...and that it only uses constant buffers and immediates
-
-                Instruction &def = *i.asOperands[0].m_Defines[0].m_Inst;
-                bool isStatic = true;
-                for (uint32_t k = def.ui32FirstSrc; k < def.ui32NumOperands; k++)
-                {
-                    Operand &o = def.asOperands[k];
-                    if (!(o.eType == OPERAND_TYPE_CONSTANT_BUFFER || o.eType == OPERAND_TYPE_IMMEDIATE32))
-                    {
-                        isStatic = false;
-                        break;
-                    }
-                    // Also check that the constant buffer access is "simple"
-                    if (o.eType == OPERAND_TYPE_CONSTANT_BUFFER)
-                    {
-                        if (o.m_SubOperands[0].get() || o.m_SubOperands[1].get())
-                        {
-                            isStatic = false;
-                            break;
-                        }
-                    }
-                }
-                if (isStatic)
-                {
-                    i.m_StaticBranchCondition = &def;
-                    if (BuildStaticBranchNameForInstruction(i))
-                    {
-                        psPhase->m_StaticBranchInstructions.push_back(&i);
-                        i.m_IsStaticBranch = true;
-                    }
-                    else
-                        i.m_StaticBranchCondition = NULL;
-                }
-            }
-        }
-    }
 }

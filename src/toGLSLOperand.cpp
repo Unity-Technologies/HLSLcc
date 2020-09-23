@@ -324,10 +324,11 @@ void ToGLSL::TranslateOperandIndexMAD(const Operand* psOperand, int index, uint3
     }
 }
 
-static std::string GetBitcastOp(HLSLCrossCompilerContext *psContext, SHADER_VARIABLE_TYPE from, SHADER_VARIABLE_TYPE to, uint32_t numComponents)
+static std::string GetBitcastOp(HLSLCrossCompilerContext *psContext, SHADER_VARIABLE_TYPE from, SHADER_VARIABLE_TYPE to, uint32_t numComponents, bool &needsBitcastOp)
 {
     if (psContext->psShader->eTargetLanguage == LANG_METAL)
     {
+        needsBitcastOp = false;
         std::ostringstream oss;
         oss << "as_type<";
         oss << GetConstructorForTypeMetal(to, numComponents);
@@ -336,6 +337,7 @@ static std::string GetBitcastOp(HLSLCrossCompilerContext *psContext, SHADER_VARI
     }
     else
     {
+        needsBitcastOp = true;
         if ((to == SVT_FLOAT || to == SVT_FLOAT16 || to == SVT_FLOAT10) && from == SVT_INT)
             return "intBitsToFloat";
         else if ((to == SVT_FLOAT || to == SVT_FLOAT16 || to == SVT_FLOAT10) && from == SVT_UINT)
@@ -351,9 +353,8 @@ static std::string GetBitcastOp(HLSLCrossCompilerContext *psContext, SHADER_VARI
 }
 
 // Helper function to print out a single 32-bit immediate value in desired format
-static void printImmediate32(HLSLCrossCompilerContext *psContext, uint32_t value, SHADER_VARIABLE_TYPE eType)
+static void printImmediate32(HLSLCrossCompilerContext *psContext, bstring glsl, uint32_t value, SHADER_VARIABLE_TYPE eType)
 {
-    bstring glsl = *psContext->currentGLSLString;
     int needsParenthesis = 0;
 
     // Print floats as bit patterns.
@@ -379,12 +380,10 @@ static void printImmediate32(HLSLCrossCompilerContext *psContext, uint32_t value
                 if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
                     bformata(glsl, "int(0x%Xu)", value);
                 else
-                    bformata(glsl, "0x%X", value);
+                    bformata(glsl, "%d", value);
             }
-            else if (value <= 1024) // Print anything below 1024 as decimal, and hex after that
-                bformata(glsl, "%d", value);
             else
-                bformata(glsl, "0x%X", value);
+                bformata(glsl, "%d", value);
             break;
         case SVT_UINT:
         case SVT_UINT16:
@@ -409,9 +408,9 @@ static void printImmediate32(HLSLCrossCompilerContext *psContext, uint32_t value
         bcatcstr(glsl, ")");
 }
 
-void ToGLSL::TranslateVariableNameWithMask(const Operand* psOperand, uint32_t ui32TOFlag, uint32_t* pui32IgnoreSwizzle, uint32_t ui32CompMask, int *piRebase)
+void ToGLSL::TranslateVariableNameWithMask(const Operand* psOperand, uint32_t ui32TOFlag, uint32_t* pui32IgnoreSwizzle, uint32_t ui32CompMask, int *piRebase, bool forceNoConversion)
 {
-    TranslateVariableNameWithMask(*psContext->currentGLSLString, psOperand, ui32TOFlag, pui32IgnoreSwizzle, ui32CompMask, piRebase);
+    TranslateVariableNameWithMask(*psContext->currentGLSLString, psOperand, ui32TOFlag, pui32IgnoreSwizzle, ui32CompMask, piRebase, forceNoConversion);
 }
 
 void ToGLSL::DeclareDynamicIndexWrapper(const struct ShaderVarType* psType)
@@ -494,7 +493,7 @@ void ToGLSL::DeclareDynamicIndexWrapper(const char* psName, SHADER_VARIABLE_CLAS
     m_FunctionDefinitionsOrder.push_back(psName);
 }
 
-void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperand, uint32_t ui32TOFlag, uint32_t* pui32IgnoreSwizzle, uint32_t ui32CompMask, int *piRebase)
+void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperand, uint32_t ui32TOFlag, uint32_t* pui32IgnoreSwizzle, uint32_t ui32CompMask, int *piRebase, bool forceNoConversion)
 {
     int numParenthesis = 0;
     int hasCtor = 0;
@@ -566,6 +565,8 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
 
     requestedComponents = std::max(requestedComponents, numComponents);
 
+    bool needsBitcastOp = false;
+
     if (!(ui32TOFlag & (TO_FLAG_DESTINATION | TO_FLAG_NAME_ONLY | TO_FLAG_DECLARATION_NAME)))
     {
         if (psOperand->eType == OPERAND_TYPE_IMMEDIATE32 || psOperand->eType == OPERAND_TYPE_IMMEDIATE64)
@@ -582,7 +583,7 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
             if (CanDoDirectCast(psContext, eType, requestedType) || !HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
             {
                 hasCtor = 1;
-                if (eType == SVT_BOOL)
+                if (eType == SVT_BOOL && !forceNoConversion)
                 {
                     needsBoolUpscale = 1;
                     // make sure to wrap the whole thing in parens so the upscale
@@ -590,13 +591,24 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
                     bcatcstr(glsl, "(");
                     numParenthesis++;
                 }
+
+                // case 1154828: In case of OPERAND_TYPE_INPUT_PRIMITIVEID we end up here with requestedComponents == 0, GetConstructorForType below would return empty string and we miss the cast to uint
+                if (requestedComponents < 1)
+                    requestedComponents = 1;
+
                 bformata(glsl, "%s(", GetConstructorForType(psContext, requestedType, requestedComponents, false));
                 numParenthesis++;
             }
             else
             {
                 // Direct cast not possible, need to do bitcast.
-                bformata(glsl, "%s(", GetBitcastOp(psContext, eType, requestedType, requestedComponents).c_str());
+                if (IsESLanguage(psContext->psShader->eTargetLanguage) && (requestedType == SVT_UINT))
+                {
+                    // without explicit cast Adreno may treat the return type of floatBitsToUint as signed int (case 1256567)
+                    bformata(glsl, "%s(", GetConstructorForType(psContext, requestedType, requestedComponents, false));
+                    numParenthesis++;
+                }
+                bformata(glsl, "%s(", GetBitcastOp(psContext, eType, requestedType, requestedComponents, /*out*/ needsBitcastOp).c_str());
                 numParenthesis++;
             }
         }
@@ -619,7 +631,7 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
         {
             if (psOperand->iNumComponents == 1)
             {
-                printImmediate32(psContext, *((unsigned int*)(&psOperand->afImmediates[0])), requestedType);
+                printImmediate32(psContext, glsl, *((unsigned int*)(&psOperand->afImmediates[0])), requestedType);
             }
             else
             {
@@ -640,7 +652,7 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
                     if (firstItemAdded)
                         bcatcstr(glsl, ", ");
                     uval = *((uint32_t*)(&psOperand->afImmediates[i >= psOperand->iNumComponents ? psOperand->iNumComponents - 1 : i]));
-                    printImmediate32(psContext, uval, requestedType);
+                    printImmediate32(psContext, glsl, uval, requestedType);
                     firstItemAdded = 1;
                 }
                 bcatcstr(glsl, ")");
@@ -682,7 +694,8 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
 
                     if ((psSig->eSystemValueType == NAME_POSITION && psSig->ui32SemanticIndex == 0) ||
                         (psSig->semanticName == "POS" && psSig->ui32SemanticIndex == 0) ||
-                        (psSig->semanticName == "SV_POSITION" && psSig->ui32SemanticIndex == 0))
+                        (psSig->semanticName == "SV_POSITION" && psSig->ui32SemanticIndex == 0) ||
+                        (psSig->semanticName == "POSITION" && psSig->ui32SemanticIndex == 0))
                     {
                         bcatcstr(glsl, "gl_in");
                         TranslateOperandIndex(psOperand, 0);//Vertex index
@@ -752,7 +765,16 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
             {
                 int stream = 0;
                 std::string name = psContext->GetDeclaredOutputName(psOperand, &stream, pui32IgnoreSwizzle, piRebase, 0);
+
+                // If we are writing out to built in type then we need to redirect tot he built in arrays
+                // this is safe to do as HLSL enforces 1:1 mapping, so output maps to gl_InvocationID by default
+                if (name == "gl_Position" && psContext->psShader->eShaderType == HULL_SHADER)
+                {
+                    bcatcstr(glsl, "gl_out[gl_InvocationID].");
+                }
+
                 bcatcstr(glsl, name.c_str());
+
                 if (psOperand->m_SubOperands[0].get())
                 {
                     bcatcstr(glsl, "[");
@@ -1327,7 +1349,26 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
         case OPERAND_TYPE_NULL:
         {
             // Null register, used to discard results of operations
-            bcatcstr(glsl, "//null");
+            if (psContext->psShader->eTargetLanguage == LANG_ES_100)
+            {
+                // On ES2 we can pass this as an argument to a function, e.g. fake integer operations that we do. See case 1124159.
+                bcatcstr(glsl, "null");
+                bool alreadyDeclared = false;
+                std::string toDeclare = "vec4 null;";
+                for (size_t i = 0; i < m_AdditionalDefinitions.size(); ++i)
+                {
+                    if (toDeclare == m_AdditionalDefinitions[i])
+                    {
+                        alreadyDeclared = true;
+                        break;
+                    }
+                }
+
+                if (!alreadyDeclared)
+                    m_AdditionalDefinitions.push_back(toDeclare);
+            }
+            else
+                bcatcstr(glsl, "//null");
             break;
         }
         case OPERAND_TYPE_OUTPUT_CONTROL_POINT_ID:
@@ -1564,6 +1605,13 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
         *pui32IgnoreSwizzle = 1;
     }
 
+    if (needsBitcastOp && (*pui32IgnoreSwizzle == 0))
+    {
+        // some glsl compilers (Switch's GLSLc) emit warnings "u_xlat.w uninitialized" if generated code looks like: "floatBitsToUint(u_xlat).xz". Instead, generate: "floatBitsToUint(u_xlat.xz)"
+        TranslateOperandSwizzleWithMask(glsl, psContext, psOperand, ui32CompMask, piRebase ? *piRebase : 0);
+        *pui32IgnoreSwizzle = 1;
+    }
+
     if (needsBoolUpscale)
     {
         if (requestedType == SVT_UINT || requestedType == SVT_UINT16 || requestedType == SVT_UINT8)
@@ -1573,7 +1621,7 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
             if (HaveUnsignedTypes(psContext->psShader->eTargetLanguage))
                 bcatcstr(glsl, ") * int(0xffffffffu)");
             else
-                bcatcstr(glsl, ") * int(0xffff)");  // GLSL ES 2 spec: high precision ints are guaranteed to have a range of (-2^16, 2^16)
+                bcatcstr(glsl, ") * -1");  // GLSL ES 2 spec: high precision ints are guaranteed to have a range of (-2^16, 2^16)
         }
 
         numParenthesis--;
@@ -1588,12 +1636,12 @@ void ToGLSL::TranslateVariableNameWithMask(bstring glsl, const Operand* psOperan
     }
 }
 
-void ToGLSL::TranslateOperand(const Operand* psOperand, uint32_t ui32TOFlag, uint32_t ui32ComponentMask)
+void ToGLSL::TranslateOperand(const Operand* psOperand, uint32_t ui32TOFlag, uint32_t ui32ComponentMask, bool forceNoConversion)
 {
-    TranslateOperand(*psContext->currentGLSLString, psOperand, ui32TOFlag, ui32ComponentMask);
+    TranslateOperand(*psContext->currentGLSLString, psOperand, ui32TOFlag, ui32ComponentMask, forceNoConversion);
 }
 
-void ToGLSL::TranslateOperand(bstring glsl, const Operand* psOperand, uint32_t ui32TOFlag, uint32_t ui32ComponentMask)
+void ToGLSL::TranslateOperand(bstring glsl, const Operand* psOperand, uint32_t ui32TOFlag, uint32_t ui32ComponentMask, bool forceNoConversion)
 {
     uint32_t ui32IgnoreSwizzle = 0;
     int iRebase = 0;
@@ -1615,7 +1663,7 @@ void ToGLSL::TranslateOperand(bstring glsl, const Operand* psOperand, uint32_t u
 
     if (ui32TOFlag & TO_FLAG_NAME_ONLY)
     {
-        TranslateVariableNameWithMask(glsl, psOperand, ui32TOFlag, &ui32IgnoreSwizzle, OPERAND_4_COMPONENT_MASK_ALL, &iRebase);
+        TranslateVariableNameWithMask(glsl, psOperand, ui32TOFlag, &ui32IgnoreSwizzle, OPERAND_4_COMPONENT_MASK_ALL, &iRebase, forceNoConversion);
         return;
     }
 
@@ -1642,7 +1690,7 @@ void ToGLSL::TranslateOperand(bstring glsl, const Operand* psOperand, uint32_t u
         }
     }
 
-    TranslateVariableNameWithMask(glsl, psOperand, ui32TOFlag, &ui32IgnoreSwizzle, ui32ComponentMask, &iRebase);
+    TranslateVariableNameWithMask(glsl, psOperand, ui32TOFlag, &ui32IgnoreSwizzle, ui32ComponentMask, &iRebase, forceNoConversion);
 
     if (psContext->psShader->eShaderType == HULL_SHADER && psOperand->eType == OPERAND_TYPE_OUTPUT &&
         psOperand->ui32RegisterNumber != 0 && psOperand->iArrayElements != 0 && psOperand->eIndexRep[0] != OPERAND_INDEX_IMMEDIATE32_PLUS_RELATIVE

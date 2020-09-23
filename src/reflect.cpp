@@ -430,10 +430,19 @@ static void ReadResources(const uint32_t* pui32Tokens,//in
         pui32ConstantBuffers = ReadConstantBuffer(psShaderInfo, pui32FirstToken, pui32ConstantBuffers, psConstantBuffers + i);
     }
 
-
     //Map resource bindings to constant buffers
     if (psShaderInfo->psConstantBuffers.size())
     {
+        /* HLSL allows the following:
+         cbuffer A
+         {...}
+         cbuffer A
+         {...}
+         And both will be present in the assembly if used
+
+         So we need to track which ones we matched already and throw an error if two buffers have the same name
+        */
+        std::vector<uint32_t> alreadyBound(ui32NumConstantBuffers, 0);
         for (i = 0; i < ui32NumResourceBindings; ++i)
         {
             ResourceGroup eRGroup;
@@ -444,9 +453,11 @@ static void ReadResources(const uint32_t* pui32Tokens,//in
             //Find the constant buffer whose name matches the resource at the given resource binding point
             for (cbufIndex = 0; cbufIndex < psShaderInfo->psConstantBuffers.size(); cbufIndex++)
             {
-                if (psConstantBuffers[cbufIndex].name == psResBindings[i].name)
+                if (psConstantBuffers[cbufIndex].name == psResBindings[i].name && alreadyBound[cbufIndex] == 0)
                 {
                     psShaderInfo->aui32ResourceMap[eRGroup][psResBindings[i].ui32BindPoint] = cbufIndex;
+                    alreadyBound[cbufIndex] = 1;
+                    break;
                 }
             }
         }

@@ -4,6 +4,8 @@
 #include "Operand.h"
 #include <stdlib.h>
 #include <sstream>
+#include <cctype>
+
 
 SHADER_VARIABLE_TYPE ShaderInfo::GetTextureDataType(uint32_t regNo)
 {
@@ -385,24 +387,133 @@ ResourceGroup ShaderInfo::ResourceTypeToResourceGroup(ResourceType eType)
     return RGROUP_CBUFFER;
 }
 
+static inline std::string GetTextureNameFromSamplerName(const std::string& samplerIn)
+{
+    ASSERT(samplerIn.compare(0, 7, "sampler") == 0);
+
+    // please note that we do not have hard rules about how sampler names should be structured
+    // what's more they can even skip texture name (but that should be handled separately)
+    // how do we try to deduce the texture name: we remove known tokens, and take the leftmost (first) "word"
+    // note that we want to support c-style naming (with underscores for spaces)
+    // as it is pretty normal to have texture name starting with underscore
+    //   we bind underscores "to the right"
+
+    // note that we want sampler state to be case insensitive
+    // while checking for a match could be done with strncasecmp/_strnicmp
+    // windows is missing case-insensetive "find substring" (strcasestr), so we transform to lowercase instead
+    std::string sampler = samplerIn;
+    for (std::string::iterator i = sampler.begin(), in = sampler.end(); i != in; ++i)
+        *i = std::tolower(*i);
+
+    struct Token { const char* str; int len; };
+    #define TOKEN(s) { s, (int)strlen(s) }
+    Token token[] = {
+        TOKEN("compare"),
+        TOKEN("point"), TOKEN("trilinear"), TOKEN("linear"),
+        TOKEN("clamp"), TOKEN("clampu"), TOKEN("clampv"), TOKEN("clampw"),
+        TOKEN("repeat"), TOKEN("repeatu"), TOKEN("repeatv"), TOKEN("repeatw"),
+        TOKEN("mirror"), TOKEN("mirroru"), TOKEN("mirrorv"), TOKEN("mirrorw"),
+        TOKEN("mirroronce"), TOKEN("mirroronceu"), TOKEN("mirroroncev"), TOKEN("mirroroncew"),
+    };
+    #undef TOKEN
+
+    const char* s = sampler.c_str();
+    for (int texNameStart = 7; s[texNameStart];)
+    {
+        // skip underscores and find the potential beginning of a token
+        int tokenStart = texNameStart, tokenEnd = -1;
+        while (s[tokenStart] == '_')
+            ++tokenStart;
+
+        // check token list for matches
+        for (int i = 0, n = sizeof(token) / sizeof(token[0]); i < n && tokenEnd < 0; ++i)
+            if (strncmp(s + tokenStart, token[i].str, token[i].len) == 0)
+                tokenEnd = tokenStart + token[i].len;
+
+        if (tokenEnd < 0)
+        {
+            // we have found texture name
+
+            // find next token
+            int nextTokenStart = sampler.length();
+            for (int i = 0, n = sizeof(token) / sizeof(token[0]); i < n; ++i)
+            {
+                // again: note that we want to be case insensitive
+                const int pos = sampler.find(token[i].str, tokenStart);
+
+                if (pos != std::string::npos && pos < nextTokenStart)
+                    nextTokenStart = pos;
+            }
+
+            // check preceeding underscores, but only if we have found an actual token (not the end of the string)
+            if (nextTokenStart < sampler.length())
+            {
+                while (nextTokenStart > tokenStart && s[nextTokenStart - 1] == '_')
+                    --nextTokenStart;
+            }
+
+            // note that we return the substring of the initial sampler name to preserve case
+            return samplerIn.substr(texNameStart, nextTokenStart - texNameStart);
+        }
+        else
+        {
+            // we have found known token
+            texNameStart = tokenEnd;
+        }
+    }
+
+    // if we ended up here, the texture name is missing
+    return "";
+}
+
+// note that we dont have the means right now to have unit tests in hlslcc, so we do poor man testing below
+// AddSamplerPrecisions is called once for every program, so it is easy to uncomment and test
+static inline void Test_GetTextureNameFromSamplerName()
+{
+    #define CHECK(s, t) ASSERT(GetTextureNameFromSamplerName(std::string(s)) == std::string(t))
+
+    CHECK("sampler_point_clamp", "");
+    CHECK("sampler_point_clamp_Tex", "_Tex");
+    CHECK("sampler_point_clamp_Tex__", "_Tex__");
+    CHECK("sampler_______point_Tex", "_Tex");
+
+    CHECK("samplerPointClamp", "");
+    CHECK("samplerPointClamp_Tex", "_Tex");
+    CHECK("samplerPointClamp_Tex__", "_Tex__");
+
+    CHECK("samplerPointTexClamp", "Tex");
+    CHECK("samplerPoint_TexClamp", "_Tex");
+    CHECK("samplerPoint_Tex_Clamp", "_Tex");
+
+    #undef CHECK
+}
+
 void ShaderInfo::AddSamplerPrecisions(HLSLccSamplerPrecisionInfo &info)
 {
     if (info.empty())
         return;
 
+#if _DEBUG && 0
+    Test_GetTextureNameFromSamplerName();
+#endif
+
     for (size_t i = 0; i < psResourceBindings.size(); i++)
     {
         ResourceBinding *rb = &psResourceBindings[i];
-        if (rb->eType != RTYPE_SAMPLER && rb->eType != RTYPE_TEXTURE)
+        if (rb->eType != RTYPE_SAMPLER && rb->eType != RTYPE_TEXTURE && rb->eType != RTYPE_UAV_RWTYPED)
             continue;
 
-        HLSLccSamplerPrecisionInfo::iterator j = info.find(rb->name); // Try finding exact match
+        // Try finding the exact match
+        HLSLccSamplerPrecisionInfo::iterator j = info.find(rb->name);
 
-        // If match not found, check if name has "sampler" prefix
-        // -> try finding a match without the prefix (DX11 style sampler case)
+        // If match not found, check if name has "sampler" prefix (DX11 style sampler case)
+        // then we try to recover texture name from sampler name
         if (j == info.end() && rb->name.compare(0, 7, "sampler") == 0)
-            j = info.find(rb->name.substr(7, rb->name.size() - 7));
+            j = info.find(GetTextureNameFromSamplerName(rb->name));
 
+        // note that if we didnt find the respective texture, we cannot say anything about sampler precision
+        // currently it will become "unknown" resulting in half format, even if we sample with it the texture explicitly marked as float
+        // TODO: should we somehow allow overriding it?
         if (j != info.end())
             rb->ePrecision = j->second;
     }

@@ -21,23 +21,51 @@
 
 struct Instruction
 {
-    Instruction()
-        : eOpcode(OPCODE_NOP)
-        , eBooleanTestType(INSTRUCTION_TEST_ZERO)
-        , ui32NumOperands(0)
-        , ui32FirstSrc(0)
-        , m_Uses()
-        , m_SkipTranslation(false)
-        , m_InductorRegister(0)
-        , bSaturate(0)
-        , m_IsStaticBranch(false)
-        , m_StaticBranchCondition(NULL)
+    Instruction() :
+        eOpcode(OPCODE_NOP),
+        eBooleanTestType(INSTRUCTION_TEST_ZERO),
+        ui32NumOperands(0),
+        ui32FirstSrc(0),
+        m_Uses(),
+        m_SkipTranslation(false),
+        m_InductorRegister(0),
+        bSaturate(0),
+        ui32SyncFlags(0),
+        ui32PreciseMask(0),
+        ui32FuncIndexWithinInterface(0),
+        eResInfoReturnType(RESINFO_INSTRUCTION_RETURN_FLOAT),
+        bAddressOffset(0),
+        iUAddrOffset(0),
+        iVAddrOffset(0),
+        iWAddrOffset(0),
+        xType(RETURN_TYPE_UNUSED),
+        yType(RETURN_TYPE_UNUSED),
+        zType(RETURN_TYPE_UNUSED),
+        wType(RETURN_TYPE_UNUSED),
+        eResDim(RESOURCE_DIMENSION_UNKNOWN),
+        iCausedSplit(0),
+        id(0)
     {
         m_LoopInductors[0] = m_LoopInductors[1] = m_LoopInductors[2] = m_LoopInductors[3] = 0;
     }
 
     // For creating unit tests only. Create an instruction with temps (unless reg is 0xffffffff in which case use OPERAND_TYPE_INPUT/OUTPUT)
-    Instruction(uint64_t _id, OPCODE_TYPE opcode, uint32_t reg1 = 0, uint32_t reg1Mask = 0, uint32_t reg2 = 0, uint32_t reg2Mask = 0, uint32_t reg3 = 0, uint32_t reg3Mask = 0, uint32_t reg4 = 0, uint32_t reg4Mask = 0)
+    Instruction(uint64_t _id, OPCODE_TYPE opcode, uint32_t reg1 = 0, uint32_t reg1Mask = 0, uint32_t reg2 = 0, uint32_t reg2Mask = 0, uint32_t reg3 = 0, uint32_t reg3Mask = 0, uint32_t reg4 = 0, uint32_t reg4Mask = 0) :
+        ui32SyncFlags(0),
+        bSaturate(0),
+        ui32PreciseMask(0),
+        ui32FuncIndexWithinInterface(0),
+        eResInfoReturnType(RESINFO_INSTRUCTION_RETURN_FLOAT),
+        bAddressOffset(0),
+        iUAddrOffset(0),
+        iVAddrOffset(0),
+        iWAddrOffset(0),
+        xType(RETURN_TYPE_UNUSED),
+        yType(RETURN_TYPE_UNUSED),
+        zType(RETURN_TYPE_UNUSED),
+        wType(RETURN_TYPE_UNUSED),
+        eResDim(RESOURCE_DIMENSION_UNKNOWN),
+        iCausedSplit(0)
     {
         id = _id;
         eOpcode = opcode;
@@ -119,6 +147,7 @@ struct Instruction
     uint32_t ui32FirstSrc;
     Operand asOperands[6];
     uint32_t bSaturate;
+    uint32_t ui32PreciseMask;
     uint32_t ui32FuncIndexWithinInterface;
     RESINFO_RETURN_TYPE eResInfoReturnType;
 
@@ -130,23 +159,24 @@ struct Instruction
     RESOURCE_DIMENSION eResDim;
     int8_t iCausedSplit; // Nonzero if has caused a temp split. Later used by sampler datatype tweaking
 
-    bool m_IsStaticBranch; // If true, this instruction is a static branch
-    const Instruction *m_StaticBranchCondition; // If this is a static branch, this instruction points to the condition instruction. Can also be NULL if the operand itself is the condition
-    std::string m_StaticBranchName; // The name of the static branch variable, with the condition encoded in it.
-
     struct Use
     {
         Use() : m_Inst(0), m_Op(0) {}
-        Use(const Use &a) : m_Inst(a.m_Inst), m_Op(a.m_Op) {}
-        Use(Instruction *inst, Operand *op) : m_Inst(inst), m_Op(op) {}
+        Use(const Use& a) = default;
+        Use(Use&& a) = default;
+        Use(Instruction* inst, Operand* op) : m_Inst(inst), m_Op(op) {}
+        ~Use() = default;
 
-        Instruction *m_Inst; // The instruction that references the result of this instruction
-        Operand     *m_Op;   // The operand within the instruction above. Note: can also be suboperand.
+        Use& operator=(const Use& a) = default;
+        Use& operator=(Use&& a) = default;
+
+        Instruction* m_Inst; // The instruction that references the result of this instruction
+        Operand*     m_Op;   // The operand within the instruction above. Note: can also be suboperand.
     };
 
     std::vector<Use> m_Uses; // Array of use sites for the result(s) of this instruction, if any of the results is a temp reg.
 
-    Instruction *m_LoopInductors[4]; // If OPCODE_LOOP and is suitable for transforming into for-loop, contains pointers to for initializer, end condition, breakc,  and increment.
+    Instruction* m_LoopInductors[4]; // If OPCODE_LOOP and is suitable for transforming into for-loop, contains pointers to for initializer, end condition, breakc,  and increment.
     bool m_SkipTranslation; // If true, don't emit this instruction (currently used by the for loop translation)
     uint32_t m_InductorRegister; // If non-zero, the inductor variable can be declared in the for statement, and this register number has been allocated for it
 

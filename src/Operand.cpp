@@ -9,7 +9,7 @@ uint32_t Operand::GetAccessMask() const
 {
     int i;
     uint32_t accessMask = 0;
-    // TODO: Destination writemask can (AND DOES) affect access from sources, but do it conservatively for now.
+    // NOTE: Destination writemask can (AND DOES) affect access from sources, but we do it conservatively for now.
     switch (eSelMode)
     {
         default:
@@ -245,6 +245,10 @@ int Operand::GetRegisterSpace(const HLSLCrossCompilerContext *psContext) const
 
 SHADER_VARIABLE_TYPE Operand::GetDataType(HLSLCrossCompilerContext* psContext, SHADER_VARIABLE_TYPE ePreferredTypeForImmediates /* = SVT_INT */) const
 {
+    // indexable temps (temp arrays) are always float
+    if (eType == OPERAND_TYPE_INDEXABLE_TEMP)
+        return SVT_FLOAT;
+
     // The min precision qualifier overrides all of the stuff below
     switch (eMinPrecision)
     {
@@ -468,15 +472,12 @@ SHADER_VARIABLE_TYPE Operand::GetDataType(HLSLCrossCompilerContext* psContext, S
             {
                 int foundVar = ShaderInfo::GetShaderVarFromOffset(aui32ArraySizes[1], aui32Swizzle, psCBuf, &psVarType, &isArray, NULL, &rebase, psContext->flags);
                 if (foundVar)
-                {
                     return psVarType->Type;
-                }
+
+                ASSERT(0);
             }
             else
-            {
-                // Todo: this isn't correct yet.
-                return SVT_FLOAT;
-            }
+                ASSERT(0);
             break;
         }
         case OPERAND_TYPE_IMMEDIATE32:
@@ -520,7 +521,6 @@ SHADER_VARIABLE_TYPE Operand::GetDataType(HLSLCrossCompilerContext* psContext, S
             return psContext->IsVulkan() ? SVT_UINT : SVT_FLOAT;
         }
 
-        case OPERAND_TYPE_INDEXABLE_TEMP: // Indexable temps are always floats
         default:
         {
             return SVT_FLOAT;
@@ -572,7 +572,6 @@ int Operand::GetNumInputElements(const HLSLCrossCompilerContext *psContext) cons
 
     ASSERT(psSig != NULL);
 
-    // TODO: Are there ever any cases where the mask has 'holes'?
     return HLSLcc::GetNumberBitsSet(psSig->ui32Mask);
 }
 
@@ -603,9 +602,9 @@ Operand* Operand::GetDynamicIndexOperand(HLSLCrossCompilerContext *psContext, co
         else if (psDynIndexOrigin->eOpcode == OPCODE_IMUL)
         {
             // check which one of the src operands is the original index
-            if ((asOps[2].eType == OPERAND_TYPE_TEMP || asOps[2].eType == OPERAND_TYPE_INPUT) && asOps[3].eType == OPERAND_TYPE_IMMEDIATE32)
+            if ((asOps[2].eType == OPERAND_TYPE_TEMP || asOps[2].eType == OPERAND_TYPE_INPUT || asOps[2].eType == OPERAND_TYPE_CONSTANT_BUFFER) && asOps[3].eType == OPERAND_TYPE_IMMEDIATE32)
                 psOriginOp = &asOps[2];
-            else if ((asOps[3].eType == OPERAND_TYPE_TEMP || asOps[3].eType == OPERAND_TYPE_INPUT) &&  asOps[2].eType == OPERAND_TYPE_IMMEDIATE32)
+            else if ((asOps[3].eType == OPERAND_TYPE_TEMP || asOps[3].eType == OPERAND_TYPE_INPUT || asOps[3].eType == OPERAND_TYPE_CONSTANT_BUFFER) &&  asOps[2].eType == OPERAND_TYPE_IMMEDIATE32)
                 psOriginOp = &asOps[3];
         }
         else if (psDynIndexOrigin->eOpcode == OPCODE_ISHL)

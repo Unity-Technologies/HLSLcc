@@ -129,11 +129,16 @@ public:
     struct Define
     {
         Define() : m_Inst(0), m_Op(0) {}
-        Define(const Define &a) : m_Inst(a.m_Inst), m_Op(a.m_Op) {}
-        Define(Instruction *inst, Operand *op) : m_Inst(inst), m_Op(op) {}
+        Define(const Define& a) = default;
+        Define(Define&& a) = default;
+        Define(Instruction* inst, Operand* op) : m_Inst(inst), m_Op(op) {}
+        ~Define() = default;
 
-        Instruction *m_Inst; // Instruction that writes to the temp
-        Operand     *m_Op;   // The (destination) operand within that instruction.
+        Define& operator=(const Define& other) = default;
+        Define& operator=(Define&& other) = default;
+
+        Instruction* m_Inst; // Instruction that writes to the temp
+        Operand*     m_Op;   // The (destination) operand within that instruction.
     };
 
     std::vector<Define> m_Defines; // Array of instructions whose results this operand can use. (only if eType == OPERAND_TYPE_TEMP)
