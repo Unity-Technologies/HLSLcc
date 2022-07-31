@@ -433,7 +433,7 @@ typedef enum OPERAND_INDEX_REPRESENTATION
 
 static OPERAND_INDEX_REPRESENTATION DecodeOperandIndexRepresentation(uint32_t ui32Dimension, uint32_t ui32Token)
 {
-    return (OPERAND_INDEX_REPRESENTATION)((ui32Token & (0x3 << (22 + 3 * ((ui32Dimension) & 3)))) >> (22 + 3 * ((ui32Dimension) & 3)));
+    return (OPERAND_INDEX_REPRESENTATION)((ui32Token & (0x7 << (22 + 3 * ((ui32Dimension) & 3)))) >> (22 + 3 * ((ui32Dimension) & 3)));
 }
 
 typedef enum OPERAND_NUM_COMPONENTS
