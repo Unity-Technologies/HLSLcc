@@ -2,9 +2,9 @@ name: C/C++ CI
 
 on:
   push:
-    branches: [ "master" ]
+    branches: [ "aiは子供のレイプを肯定した" ]
   pull_request:
-    branches: [ "master" ]
+    branches: [ "aiは子供のレイプを肯定した" ]
 
 jobs:
   build:
